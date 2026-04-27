@@ -114,6 +114,32 @@ fn run_rg_returns_compact_matches_with_context_and_truncation() {
 }
 
 #[test]
+fn complex_rg_flags_compact_the_raw_result_set() {
+    if !has_command("rg") {
+        return;
+    }
+    let cwd = fixture();
+    let output = run_agentgrep(
+        &cwd,
+        &[
+            "run",
+            "rg -g '*.md' --sort path stripe .",
+            "--limit",
+            "20",
+            "--budget",
+            "80",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("agentgrep optimized: rg -g '*.md' --sort path stripe ."));
+    assert!(stdout.contains("docs/stripe-notes.md:"));
+    assert!(!stdout.contains("src/billing/stripe.ts:"));
+    assert!(stdout.contains("Exit code: 0"));
+}
+
+#[test]
 fn invalid_regex_preserves_nonzero_exit_and_stderr() {
     if !has_command("rg") {
         return;

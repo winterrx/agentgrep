@@ -8,6 +8,7 @@ Safety policy:
 - Mutating git commands pass through unchanged.
 - Small command output that fits `--budget` passes through unchanged.
 - Explicit bounded reads, such as `head`, `tail`, `sed -n`, and small `cat`, preserve raw output when it fits the budget.
+- Complex search commands with filtering, sorting, context, or alternate pattern flags compact parsed raw output instead of approximating the command semantics.
 - Compacted output must preserve exit code, stderr, file paths, line numbers, exact matched lines, errors, and truncation notices.
 - Truncated proxy output should include a raw rerun hint and, when the raw output is large enough, a `.agentgrep/tee` full-output file.
 - `AGENTGREP_DISABLE=1` disables proxy optimization for `agentgrep run`.

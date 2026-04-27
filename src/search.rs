@@ -193,11 +193,53 @@ pub fn parse_raw_match_lines(raw_stdout: &[u8], limit: usize) -> Vec<SearchMatch
     matches
 }
 
+pub fn summary_from_raw_match_lines(
+    pattern: &str,
+    roots: &[PathBuf],
+    raw_stdout: &[u8],
+    limit: usize,
+) -> Option<SearchSummary> {
+    let stdout = String::from_utf8_lossy(raw_stdout);
+    let mut matches = Vec::new();
+    let mut total_matches = 0;
+    for line in stdout.lines() {
+        let Some(parsed) = parse_path_line_match(line) else {
+            continue;
+        };
+        total_matches += 1;
+        if matches.len() < limit {
+            matches.push(parsed);
+        }
+    }
+
+    if total_matches == 0 {
+        return None;
+    }
+
+    Some(summary_from_matches(
+        pattern,
+        roots,
+        0,
+        total_matches,
+        matches,
+    ))
+}
+
 fn parse_path_line_match(line: &str) -> Option<SearchMatch> {
     let mut parts = line.splitn(3, ':');
     let path = parts.next()?;
-    let line_number = parts.next()?.parse().ok()?;
-    let matched_line = parts.next()?.to_string();
+    let second = parts.next()?;
+    let (line_number, matched_line) = match second.parse().ok() {
+        Some(line_number) => (line_number, parts.next()?.to_string()),
+        None => {
+            let matched_line = match parts.next() {
+                Some(rest) => format!("{second}:{rest}"),
+                None => second.to_string(),
+            };
+            let line_number = find_line_number(Path::new(path), &matched_line)?;
+            (line_number, matched_line)
+        }
+    };
     Some(SearchMatch {
         path: path.to_string(),
         line_number,
@@ -205,6 +247,14 @@ fn parse_path_line_match(line: &str) -> Option<SearchMatch> {
         before: context_line(Path::new(path), line_number.saturating_sub(1)),
         after: context_line(Path::new(path), line_number + 1),
     })
+}
+
+fn find_line_number(path: &Path, needle: &str) -> Option<usize> {
+    let content = fs::read_to_string(path).ok()?;
+    content
+        .lines()
+        .position(|line| line == needle)
+        .map(|idx| idx + 1)
 }
 
 fn context_line(path: &Path, line_number: usize) -> Option<String> {

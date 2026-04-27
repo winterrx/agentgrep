@@ -27,6 +27,7 @@ pub struct SearchCommand {
     pub kind: SearchKind,
     pub pattern: String,
     pub paths: Vec<PathBuf>,
+    pub prefer_raw_matches: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,19 +167,39 @@ fn executable_name(word: &str) -> String {
 fn parse_rg(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
     let mut pattern = None;
     let mut paths = Vec::new();
+    let mut prefer_raw_matches = false;
     let mut i = 1;
     while i < words.len() {
         let word = &words[i];
         if word == "--" {
             i += 1;
+            continue;
+        }
+        if let Some(value) = word.strip_prefix("--regexp=") {
+            pattern = Some(value.to_string());
+            prefer_raw_matches = true;
+            i += 1;
             break;
         }
-        if (word == "-e" || word == "--regexp") && words.get(i + 1).is_some() {
+        if let Some(value) = word.strip_prefix("-e").filter(|value| !value.is_empty()) {
+            pattern = Some(value.to_string());
+            prefer_raw_matches = true;
+            i += 1;
+            break;
+        }
+        if matches!(word.as_str(), "-e" | "--regexp") && words.get(i + 1).is_some() {
             pattern = words.get(i + 1).cloned();
+            prefer_raw_matches = true;
             i += 2;
             break;
         }
-        if word.starts_with('-') {
+        if rg_option_takes_value(word) {
+            prefer_raw_matches = true;
+            i += 2;
+            continue;
+        }
+        if rg_inline_option_value(word) || word.starts_with('-') {
+            prefer_raw_matches = true;
             i += 1;
             continue;
         }
@@ -188,7 +209,22 @@ fn parse_rg(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
     }
 
     while i < words.len() {
-        paths.push(PathBuf::from(&words[i]));
+        let word = &words[i];
+        if word == "--" {
+            i += 1;
+            continue;
+        }
+        if rg_option_takes_value(word) {
+            prefer_raw_matches = true;
+            i += 2;
+            continue;
+        }
+        if rg_inline_option_value(word) || word.starts_with('-') {
+            prefer_raw_matches = true;
+            i += 1;
+            continue;
+        }
+        paths.push(PathBuf::from(word));
         i += 1;
     }
 
@@ -197,6 +233,7 @@ fn parse_rg(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
             kind: SearchKind::Rg,
             pattern,
             paths: default_paths(paths),
+            prefer_raw_matches,
         })),
         None => Ok(ParsedCommand::Unsupported {
             reason: "rg command has no pattern".to_string(),
@@ -208,17 +245,56 @@ fn parse_grep(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
     let mut recursive = false;
     let mut pattern = None;
     let mut paths = Vec::new();
+    let mut prefer_raw_matches = false;
     let mut i = 1;
     while i < words.len() {
         let word = &words[i];
         if word == "--" {
             i += 1;
+            continue;
+        }
+        if let Some(value) = word.strip_prefix("--regexp=") {
+            pattern = Some(value.to_string());
+            prefer_raw_matches = true;
+            i += 1;
             break;
+        }
+        if let Some(value) = word.strip_prefix("-e").filter(|value| !value.is_empty()) {
+            pattern = Some(value.to_string());
+            prefer_raw_matches = true;
+            i += 1;
+            break;
+        }
+        if matches!(word.as_str(), "-e" | "--regexp") && words.get(i + 1).is_some() {
+            pattern = words.get(i + 1).cloned();
+            prefer_raw_matches = true;
+            i += 2;
+            break;
+        }
+        if matches!(word.as_str(), "-f" | "--file") || word.starts_with("--file=") {
+            return Ok(ParsedCommand::Unsupported {
+                reason: "grep pattern files are passed through".to_string(),
+            });
         }
         if word.starts_with('-') {
             if word.contains('R') || word.contains('r') || word == "--recursive" {
                 recursive = true;
             }
+            if matches!(word.as_str(), "-R" | "-r" | "--recursive") {
+                i += 1;
+                continue;
+            }
+            if grep_option_takes_value(word) {
+                prefer_raw_matches = true;
+                i += 2;
+                continue;
+            }
+            if grep_inline_option_value(word) {
+                prefer_raw_matches = true;
+                i += 1;
+                continue;
+            }
+            prefer_raw_matches = true;
             i += 1;
             continue;
         }
@@ -227,8 +303,25 @@ fn parse_grep(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
         break;
     }
     while i < words.len() {
-        if words[i] != "--" {
-            paths.push(PathBuf::from(&words[i]));
+        let word = &words[i];
+        if word == "--" {
+            i += 1;
+            continue;
+        }
+        if grep_option_takes_value(word) {
+            prefer_raw_matches = true;
+            i += 2;
+            continue;
+        }
+        if grep_inline_option_value(word) {
+            prefer_raw_matches = true;
+            i += 1;
+            continue;
+        }
+        if word.starts_with('-') {
+            prefer_raw_matches = true;
+        } else {
+            paths.push(PathBuf::from(word));
         }
         i += 1;
     }
@@ -244,11 +337,103 @@ fn parse_grep(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
             kind: SearchKind::Grep,
             pattern,
             paths: default_paths(paths),
+            prefer_raw_matches,
         })),
         None => Ok(ParsedCommand::Unsupported {
             reason: "grep -R command has no pattern".to_string(),
         }),
     }
+}
+
+fn rg_option_takes_value(word: &str) -> bool {
+    matches!(
+        word,
+        "-g" | "--glob"
+            | "-t"
+            | "--type"
+            | "-T"
+            | "--type-not"
+            | "-A"
+            | "--after-context"
+            | "-B"
+            | "--before-context"
+            | "-C"
+            | "--context"
+            | "-m"
+            | "--max-count"
+            | "-j"
+            | "--threads"
+            | "--sort"
+            | "--sortr"
+            | "--ignore-file"
+            | "--path-separator"
+            | "--engine"
+            | "--encoding"
+            | "--colors"
+            | "--max-filesize"
+    )
+}
+
+fn rg_inline_option_value(word: &str) -> bool {
+    matches!(
+        word.split_once('=').map(|(flag, _)| flag),
+        Some(
+            "--glob"
+                | "--type"
+                | "--type-not"
+                | "--after-context"
+                | "--before-context"
+                | "--context"
+                | "--max-count"
+                | "--threads"
+                | "--sort"
+                | "--sortr"
+                | "--ignore-file"
+                | "--path-separator"
+                | "--engine"
+                | "--encoding"
+                | "--colors"
+                | "--max-filesize"
+        )
+    ) || matches!(
+        word.get(..2),
+        Some("-g" | "-t" | "-T" | "-A" | "-B" | "-C" | "-m" | "-j")
+    ) && word.len() > 2
+}
+
+fn grep_option_takes_value(word: &str) -> bool {
+    matches!(
+        word,
+        "-A" | "--after-context"
+            | "-B"
+            | "--before-context"
+            | "-C"
+            | "--context"
+            | "-m"
+            | "--max-count"
+            | "--include"
+            | "--exclude"
+            | "--exclude-dir"
+            | "--binary-files"
+            | "--label"
+    )
+}
+
+fn grep_inline_option_value(word: &str) -> bool {
+    matches!(
+        word.split_once('=').map(|(flag, _)| flag),
+        Some(
+            "--after-context"
+                | "--before-context"
+                | "--context"
+                | "--max-count"
+                | "--include"
+                | "--exclude"
+                | "--exclude-dir"
+                | "--binary-files"
+                | "--label"
+        )
+    ) || matches!(word.get(..2), Some("-A" | "-B" | "-C" | "-m")) && word.len() > 2
 }
 
 fn parse_find(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
@@ -581,6 +766,7 @@ fn parse_git_grep(words: &[String], grep_index: usize) -> Option<ParsedCommand> 
             kind: SearchKind::GitGrep,
             pattern,
             paths: default_paths(paths),
+            prefer_raw_matches: false,
         })
     })
 }
@@ -622,6 +808,7 @@ mod tests {
                 kind: SearchKind::Rg,
                 pattern: "stripe".to_string(),
                 paths: vec![PathBuf::from(".")],
+                prefer_raw_matches: false,
             })
         );
     }
@@ -634,6 +821,29 @@ mod tests {
                 kind: SearchKind::Grep,
                 pattern: "stripe".to_string(),
                 paths: vec![PathBuf::from(".")],
+                prefer_raw_matches: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_complex_search_flags_in_raw_compatibility_mode() {
+        assert_eq!(
+            parse_command("rg -g '*.rs' --sort path stripe src").unwrap(),
+            ParsedCommand::Search(SearchCommand {
+                kind: SearchKind::Rg,
+                pattern: "stripe".to_string(),
+                paths: vec![PathBuf::from("src")],
+                prefer_raw_matches: true,
+            })
+        );
+        assert_eq!(
+            parse_command("grep -R --include '*.rs' stripe .").unwrap(),
+            ParsedCommand::Search(SearchCommand {
+                kind: SearchKind::Grep,
+                pattern: "stripe".to_string(),
+                paths: vec![PathBuf::from(".")],
+                prefer_raw_matches: true,
             })
         );
     }
@@ -745,6 +955,7 @@ mod tests {
                 kind: SearchKind::GitGrep,
                 pattern: "stripe".to_string(),
                 paths: vec![PathBuf::from("src")],
+                prefer_raw_matches: false,
             })
         );
         assert_eq!(

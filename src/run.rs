@@ -140,23 +140,41 @@ fn execute_search_proxy(
     }
     let limit = options.limit;
 
-    let summary = match search::search_paths(
-        &search_command.pattern,
-        &search_command.paths,
-        options.exact,
-        limit,
-    ) {
-        Ok(summary) => summary,
-        Err(_) => {
-            let parsed = search::parse_raw_match_lines(&raw.stdout, limit);
-            let total = String::from_utf8_lossy(&raw.stdout).lines().count();
-            summary_from_matches(
-                &search_command.pattern,
-                &search_command.paths,
-                0,
-                total,
-                parsed,
-            )
+    let summary = if search_command.prefer_raw_matches {
+        match search::summary_from_raw_match_lines(
+            &search_command.pattern,
+            &search_command.paths,
+            &raw.stdout,
+            limit,
+        ) {
+            Some(summary) => summary,
+            None => {
+                return Ok(ExecResult::from_parts(
+                    raw.stdout,
+                    raw.stderr,
+                    raw.exit_code,
+                ));
+            }
+        }
+    } else {
+        match search::search_paths(
+            &search_command.pattern,
+            &search_command.paths,
+            options.exact,
+            limit,
+        ) {
+            Ok(summary) => summary,
+            Err(_) => {
+                let parsed = search::parse_raw_match_lines(&raw.stdout, limit);
+                let total = String::from_utf8_lossy(&raw.stdout).lines().count();
+                summary_from_matches(
+                    &search_command.pattern,
+                    &search_command.paths,
+                    0,
+                    total,
+                    parsed,
+                )
+            }
         }
     };
 

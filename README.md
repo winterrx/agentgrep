@@ -41,6 +41,7 @@ Safety defaults:
 
 - Small outputs that fit the current `--budget` pass through exactly.
 - Explicit bounded reads like `head`, `tail`, `sed -n`, and small `cat` calls stay raw unless they exceed the budget.
+- Complex `rg`/`grep` forms with filters, sort options, context flags, or `-e` patterns compact the actual raw result stream instead of re-running an approximate search.
 - Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `.agentgrep/tee`.
 - Set `AGENTGREP_DISABLE=1` to bypass proxy optimization for `agentgrep run`.
 - Set `AGENTGREP_TEE=0` to disable full-output tee files.
