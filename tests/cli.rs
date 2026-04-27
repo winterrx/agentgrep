@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::{env, iter};
 
 fn agentgrep() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_agentgrep"))
@@ -164,6 +165,62 @@ fn map_hides_generated_vendor_and_build_files() {
     assert!(stdout.contains("tests/billing.test.ts"));
     assert!(!stdout.contains("vendor/stripe-sdk.js"));
     assert!(!stdout.contains("generated/schema.generated.ts"));
+}
+
+#[test]
+fn shims_install_status_and_uninstall() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    let install_stdout = String::from_utf8_lossy(&installed.stdout);
+    assert!(installed.status.success());
+    assert!(install_stdout.contains("installed: 12"));
+    assert!(dir.join("rg").is_file());
+
+    let status = run_agentgrep(tmp.path(), &["shims", "status", "--dir", &dir_arg]);
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(status.status.success());
+    assert!(status_stdout.contains("rg: installed"));
+    assert!(status_stdout.contains("installed: 12/12"));
+
+    let uninstalled = run_agentgrep(tmp.path(), &["shims", "uninstall", "--dir", &dir_arg]);
+    assert!(uninstalled.status.success());
+    assert!(!dir.join("rg").exists());
+}
+
+#[test]
+fn rg_shim_proxies_without_recursing() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let cwd = tmp.path().join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+    let content = iter::repeat_n("needle in a haystack\n", 1200).collect::<String>();
+    fs::write(cwd.join("huge.txt"), content).unwrap();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("rg needle")
+        .current_dir(&cwd)
+        .env("PATH", path)
+        .env("AGENTGREP_TEE", "0")
+        .output()
+        .expect("rg shim runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success());
+    assert!(stdout.contains("agentgrep optimized: rg needle"));
+    assert!(stdout.contains("huge.txt:"));
+    assert!(stdout.contains("Exit code: 0"));
 }
 
 #[test]

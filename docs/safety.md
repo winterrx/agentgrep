@@ -15,6 +15,7 @@ Safety policy:
 - `AGENTGREP_TEE=0` disables full-output tee files.
 - Trace recording stores command metadata only, never stdout/stderr content.
 - Trace replay only executes safe read-only discovery commands; mutating git, unsupported commands, shell control operators, and redirections are skipped.
+- Shims are opt-in, reversible, refuse to overwrite non-agentgrep files unless `--force` is passed, and resolve the real executable before proxying to avoid recursion.
 
 RTK reference notes:
 

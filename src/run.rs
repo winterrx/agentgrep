@@ -20,21 +20,34 @@ pub fn execute_run_with_trace(
     options: OutputOptions,
     trace_path: Option<PathBuf>,
 ) -> Result<ExecResult> {
+    execute_run_with_trace_label(command, command, options, trace_path)
+}
+
+pub fn execute_run_with_trace_label(
+    command: &str,
+    display_command: &str,
+    options: OutputOptions,
+    trace_path: Option<PathBuf>,
+) -> Result<ExecResult> {
     let trace_path = crate::trace::resolve_trace_path(trace_path);
     if trace_path.is_none() {
-        return execute_run_inner(command, options);
+        return execute_run_inner(command, display_command, options);
     }
 
     let started = Instant::now();
-    let result = execute_run_inner(command, options);
+    let result = execute_run_inner(command, display_command, options);
     if let (Some(path), Ok(exec_result)) = (&trace_path, &result) {
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let _ = crate::trace::append_run_record(path, command, exec_result, elapsed_ms);
+        let _ = crate::trace::append_run_record(path, display_command, exec_result, elapsed_ms);
     }
     result
 }
 
-fn execute_run_inner(command: &str, options: OutputOptions) -> Result<ExecResult> {
+fn execute_run_inner(
+    command: &str,
+    display_command: &str,
+    options: OutputOptions,
+) -> Result<ExecResult> {
     let options = options.normalized();
     if options.raw || std::env::var("AGENTGREP_DISABLE").ok().as_deref() == Some("1") {
         return passthrough(command);
@@ -47,7 +60,7 @@ fn execute_run_inner(command: &str, options: OutputOptions) -> Result<ExecResult
 
     match parsed {
         ParsedCommand::Search(search_command) => {
-            execute_search_proxy(command, search_command, options)
+            execute_search_proxy(command, display_command, search_command, options)
         }
         ParsedCommand::FindMap { path } | ParsedCommand::LsRecursive { path } => {
             if !path.exists() {
@@ -61,11 +74,12 @@ fn execute_run_inner(command: &str, options: OutputOptions) -> Result<ExecResult
                     raw.exit_code,
                 ));
             }
-            let recovery_hint = crate::tee::tee_raw_output(command, &raw.stdout, &raw.stderr, true);
+            let recovery_hint =
+                crate::tee::tee_raw_output(display_command, &raw.stdout, &raw.stderr, true);
             repo_map::execute_map_with_recovery(
                 &path,
                 options,
-                Some(command.to_string()),
+                Some(display_command.to_string()),
                 recovery_hint.as_deref(),
             )
         }
@@ -83,15 +97,15 @@ fn execute_run_inner(command: &str, options: OutputOptions) -> Result<ExecResult
                     ));
                 }
                 let recovery_hint =
-                    crate::tee::tee_raw_output(command, &raw.stdout, &raw.stderr, true);
+                    crate::tee::tee_raw_output(display_command, &raw.stdout, &raw.stderr, true);
                 repo_map::execute_map_with_recovery(
                     &path,
                     options,
-                    Some(command.to_string()),
+                    Some(display_command.to_string()),
                     recovery_hint.as_deref(),
                 )
             } else {
-                repo_map::execute_map(&path, options, Some(command.to_string()))
+                repo_map::execute_map(&path, options, Some(display_command.to_string()))
             }
         }
         ParsedCommand::Cat { path } => {
@@ -127,6 +141,7 @@ pub fn passthrough(command: &str) -> Result<ExecResult> {
 
 fn execute_search_proxy(
     command: &str,
+    display_command: &str,
     search_command: crate::command::SearchCommand,
     options: OutputOptions,
 ) -> Result<ExecResult> {
@@ -179,7 +194,7 @@ fn execute_search_proxy(
     };
 
     let recovery_hint = crate::tee::tee_raw_output(
-        command,
+        display_command,
         &raw.stdout,
         &raw.stderr,
         summary.truncated || raw.exit_code != 0,
@@ -187,7 +202,7 @@ fn execute_search_proxy(
     search::render_search_result(
         &summary,
         options,
-        command,
+        display_command,
         raw.exit_code,
         &raw.stderr,
         recovery_hint.as_deref(),

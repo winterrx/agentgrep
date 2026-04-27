@@ -11,6 +11,7 @@ use crate::output::{ExecResult, OutputOptions};
 use crate::repo_map;
 use crate::run;
 use crate::search;
+use crate::shims;
 use crate::trace;
 
 #[derive(Debug, Parser)]
@@ -40,6 +41,11 @@ pub enum Commands {
     Bench(BenchArgs),
     /// Record, import, summarize, and replay agent command traces.
     Trace(TraceArgs),
+    /// Install or inspect opt-in shell command shims.
+    Shims(ShimsArgs),
+    /// Execute a command from an installed shim.
+    #[command(hide = true)]
+    ShimExec(ShimExecArgs),
     /// Check local dependencies and agentgrep readiness.
     Doctor(DoctorArgs),
 }
@@ -153,6 +159,51 @@ pub struct TraceArgs {
     pub command: TraceCommands,
 }
 
+#[derive(Debug, Args)]
+pub struct ShimsArgs {
+    #[command(subcommand)]
+    pub command: ShimsCommands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ShimsCommands {
+    /// Install POSIX shell wrappers for common agent discovery commands.
+    Install(ShimsInstallArgs),
+    /// Remove wrappers previously installed by agentgrep.
+    Uninstall(ShimsDirArgs),
+    /// Show shim install status for a directory.
+    Status(ShimsDirArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ShimsInstallArgs {
+    /// Directory to write shims into. Put this directory before the real tools on PATH.
+    #[arg(long, default_value = "~/.local/bin/agentgrep-shims")]
+    pub dir: PathBuf,
+    /// Agentgrep binary path to embed in wrappers. Defaults to the current executable.
+    #[arg(long)]
+    pub agentgrep: Option<PathBuf>,
+    /// Overwrite files that are not existing agentgrep shims.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ShimsDirArgs {
+    /// Directory containing agentgrep shims.
+    #[arg(long, default_value = "~/.local/bin/agentgrep-shims")]
+    pub dir: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct ShimExecArgs {
+    /// Tool name the shim is standing in for.
+    pub program: String,
+    /// Original argv from the shim.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum TraceCommands {
     /// Import exec_command calls from Codex's local SQLite log.
@@ -238,6 +289,8 @@ pub fn execute(cli: Cli) -> Result<ExecResult> {
         Commands::Index(args) => index::execute_index(&args.path, (&args.output).into()),
         Commands::Bench(args) => bench::execute_bench(args),
         Commands::Trace(args) => trace::execute_trace(args),
+        Commands::Shims(args) => shims::execute_shims(args),
+        Commands::ShimExec(args) => shims::execute_shim_exec(args),
         Commands::Doctor(args) => doctor::execute_doctor((&args.output).into()),
     }
 }

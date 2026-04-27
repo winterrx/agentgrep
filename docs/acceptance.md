@@ -8,7 +8,8 @@ Source of truth for the public repo: this acceptance summary and the current imp
 - `agentgrep run "<command>"` proxy surface.
 - Detection for `rg <pattern>`, `grep -R <pattern> .`, `find . -type f`, `ls -R`, `cat <file>`, and read-only `git status`, `git diff`, `git log`, `git show`, `git branch`, `git ls-files`.
 - Additional agent-habit intercepts: `head`, `tail`, numeric `sed -n`, `nl -ba ... | sed -n ...`, `wc -l`, `tree`, `git grep`, `git ls-tree`, and small read-only git inspect commands.
-- Direct commands: `regex`, `file`, `map`, `index`, `bench`, `trace`, `doctor`.
+- Direct commands: `regex`, `file`, `map`, `index`, `bench`, `trace`, `shims`, `doctor`.
+- Opt-in shims can proxy `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree` without requiring agents to change command habits.
 - Compact exact search output with file path, line number, matched line, nearby context, truncation notice, and raw fallback hint.
 - Large-file summaries by default for `file` and proxied `cat`; `--raw` emits exact bytes.
 - Repo maps hide ignored/generated/vendor/build/dependency/binary/lock files.

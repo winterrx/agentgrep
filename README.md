@@ -11,6 +11,20 @@ cargo build --release
 ./target/release/agentgrep doctor
 ```
 
+Install command shims when you want familiar commands to proxy through `agentgrep` without changing agent workflows:
+
+```bash
+agentgrep shims install --dir ~/.local/bin/agentgrep-shims
+export PATH="$HOME/.local/bin/agentgrep-shims:$PATH"
+agentgrep shims status --dir ~/.local/bin/agentgrep-shims
+```
+
+Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree`. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing. Remove them with:
+
+```bash
+agentgrep shims uninstall --dir ~/.local/bin/agentgrep-shims
+```
+
 ## Proxy commands
 
 ```bash

@@ -12,6 +12,7 @@ pub mod output;
 pub mod repo_map;
 pub mod run;
 pub mod search;
+pub mod shims;
 pub mod tee;
 pub mod trace;
 
