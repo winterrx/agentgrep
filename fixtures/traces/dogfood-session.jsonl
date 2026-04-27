@@ -1,0 +1,4 @@
+{"version":1,"source":"agentgrep-run","ts":1777313783,"cwd":".","command":"git status --short --branch","family":"git status","exit_code":0,"stdout_bytes":190,"stderr_bytes":0,"estimated_tokens":48,"elapsed_ms":12.660417}
+{"version":1,"source":"agentgrep-run","ts":1777313783,"cwd":".","command":"rg trace src tests README.md docs -n","family":"rg","exit_code":0,"stdout_bytes":716,"stderr_bytes":0,"estimated_tokens":179,"elapsed_ms":10.306333}
+{"version":1,"source":"agentgrep-run","ts":1777313783,"cwd":".","command":"sed -n '1,80p' src/trace.rs","family":"sed","exit_code":0,"stdout_bytes":576,"stderr_bytes":0,"estimated_tokens":144,"elapsed_ms":5.978708999999999}
+{"version":1,"source":"agentgrep-run","ts":1777313783,"cwd":".","command":"find . -type f","family":"find","exit_code":0,"stdout_bytes":601,"stderr_bytes":0,"estimated_tokens":151,"elapsed_ms":51.815875}

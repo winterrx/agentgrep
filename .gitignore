@@ -1,0 +1,4 @@
+/target
+.agentgrep/
+fixtures/**/.agentgrep/
+.refs/

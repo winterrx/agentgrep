@@ -1,0 +1,3 @@
+{"command":"rg stripe","intent":"find billing integration"}
+{"command":"find . -type f","intent":"map repo before edits"}
+{"command":"cat src/billing/stripe.ts","intent":"inspect candidate file"}
