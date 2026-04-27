@@ -555,13 +555,14 @@ fn git_status_is_compacted_but_git_mutation_parser_is_covered_by_unit_tests() {
         .expect("git init runs");
     fs::write(tmp.path().join("tracked.txt"), "hello\n").unwrap();
 
-    let output = run_agentgrep(tmp.path(), &["run", "git status", "--budget", "30"]);
+    let output = run_agentgrep(tmp.path(), &["run", "git status", "--budget", "4000"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success());
     assert!(stdout.contains("agentgrep optimized: git status"));
+    assert!(stdout.contains("? Untracked: 1 file(s)"), "{stdout}");
     assert!(stdout.contains("Exit code: 0"));
-    assert!(stdout.contains("Untracked files") || stdout.contains("tracked.txt"));
+    assert!(!stdout.contains("(use \"git add"));
 }
 
 #[test]

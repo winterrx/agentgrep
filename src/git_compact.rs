@@ -32,6 +32,12 @@ pub fn execute_git(
         ));
     }
 
+    if subcommand == GitReadOnly::Status
+        && let Some(porcelain_command) = status_porcelain_command(command)
+    {
+        return execute_status_porcelain(command, &porcelain_command, options);
+    }
+
     let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
     if raw_fits_budget(options, &captured.stdout, &captured.stderr) {
         return Ok(ExecResult::from_parts(
@@ -54,6 +60,39 @@ pub fn execute_git(
         captured.exit_code,
         &captured.stderr,
         recovery_hint.as_deref(),
+    )
+}
+
+fn execute_status_porcelain(
+    command: &str,
+    porcelain_command: &str,
+    options: OutputOptions,
+) -> Result<ExecResult> {
+    let captured = crate::exec::run_shell_capture_real_tools(porcelain_command, None)?;
+    if captured.exit_code != 0 {
+        return Ok(ExecResult::from_parts(
+            captured.stdout,
+            captured.stderr,
+            captured.exit_code,
+        ));
+    }
+    let lines = compact_porcelain_status(&captured.stdout, options.limit);
+    let shown_lines = lines.len();
+    let summary = GitSummary {
+        subcommand: "status".to_string(),
+        raw_lines: String::from_utf8_lossy(&captured.stdout).lines().count(),
+        shown_lines,
+        omitted_lines: 0,
+        truncated: false,
+        lines,
+    };
+    render_git(
+        command,
+        &summary,
+        options,
+        captured.exit_code,
+        &captured.stderr,
+        None,
     )
 }
 
@@ -101,6 +140,107 @@ fn compact_file_list(lines: &[String], limit: usize) -> Vec<String> {
         .take(limit)
         .cloned()
         .collect()
+}
+
+fn status_porcelain_command(command: &str) -> Option<String> {
+    let words = shell_words::split(command).ok()?;
+    let status_index = words.iter().position(|word| word == "status")?;
+    if words[status_index + 1..]
+        .iter()
+        .any(|word| word.as_str() != "--")
+    {
+        return None;
+    }
+
+    let mut compact = words[..status_index].to_vec();
+    compact.extend([
+        "status".to_string(),
+        "--porcelain".to_string(),
+        "-b".to_string(),
+    ]);
+    Some(shell_join(&compact))
+}
+
+fn shell_join(words: &[String]) -> String {
+    words
+        .iter()
+        .map(|word| shell_words::quote(word).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn compact_porcelain_status(stdout: &[u8], limit: usize) -> Vec<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut branch = None;
+    let mut staged = Vec::new();
+    let mut modified = Vec::new();
+    let mut untracked = Vec::new();
+    let mut conflicts = Vec::new();
+
+    for line in text.lines() {
+        if let Some(value) = line.strip_prefix("## ") {
+            branch = Some(format!("* {value}"));
+            continue;
+        }
+        if line.len() < 3 {
+            continue;
+        }
+        let status = &line[..2];
+        let file = line[3..].to_string();
+        let index = status.as_bytes()[0] as char;
+        let worktree = status.as_bytes()[1] as char;
+
+        if matches!(status, "DD" | "AU" | "UD" | "UA" | "DU" | "AA" | "UU")
+            || index == 'U'
+            || worktree == 'U'
+        {
+            conflicts.push(file.clone());
+            continue;
+        }
+        if matches!(index, 'M' | 'A' | 'D' | 'R' | 'C') {
+            staged.push(file.clone());
+        }
+        if matches!(worktree, 'M' | 'D') {
+            modified.push(file.clone());
+        }
+        if status == "??" {
+            untracked.push(file);
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Some(branch) = branch {
+        out.push(branch);
+    }
+    push_status_group(&mut out, "+ Staged", &staged, limit);
+    push_status_group(&mut out, "~ Modified", &modified, limit);
+    push_status_group(&mut out, "? Untracked", &untracked, limit);
+    push_status_group(&mut out, "! Conflicts", &conflicts, limit);
+    if out.len() == branch_line_count(&out) {
+        out.push("clean - nothing to commit".to_string());
+    }
+    if out.is_empty() {
+        out.push("Clean working tree".to_string());
+    }
+    out
+}
+
+fn branch_line_count(lines: &[String]) -> usize {
+    usize::from(lines.first().is_some_and(|line| line.starts_with("* ")))
+}
+
+fn push_status_group(out: &mut Vec<String>, label: &str, files: &[String], limit: usize) {
+    if files.is_empty() {
+        return;
+    }
+    out.push(format!("{label}: {} file(s)", files.len()));
+    let remaining_budget = limit.saturating_sub(out.len()).max(1);
+    for file in files.iter().take(remaining_budget) {
+        out.push(format!("  {file}"));
+    }
+    if files.len() > remaining_budget {
+        out.push(format!("  ... +{} more", files.len() - remaining_budget));
+    }
 }
 
 fn compact_status(lines: &[String], limit: usize) -> Vec<String> {
@@ -240,5 +380,37 @@ mod tests {
         );
         assert!(summary.lines.iter().any(|line| line.starts_with("@@")));
         assert!(summary.lines.iter().any(|line| line == "+new"));
+    }
+
+    #[test]
+    fn compact_porcelain_status_groups_changes_without_hints() {
+        let lines = compact_porcelain_status(
+            b"## main...origin/main\n M src/lib.rs\nA  src/new.rs\n?? tmp/\nUU src/conflict.rs\n",
+            20,
+        );
+
+        assert_eq!(
+            lines,
+            vec![
+                "* main...origin/main",
+                "+ Staged: 1 file(s)",
+                "  src/new.rs",
+                "~ Modified: 1 file(s)",
+                "  src/lib.rs",
+                "? Untracked: 1 file(s)",
+                "  tmp/",
+                "! Conflicts: 1 file(s)",
+                "  src/conflict.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn status_porcelain_command_preserves_git_globals() {
+        assert_eq!(
+            status_porcelain_command("git -C ../repo status").unwrap(),
+            "git -C ../repo status --porcelain -b"
+        );
+        assert!(status_porcelain_command("git status --short").is_none());
     }
 }
