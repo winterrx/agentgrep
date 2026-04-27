@@ -168,6 +168,35 @@ fn map_hides_generated_vendor_and_build_files() {
 }
 
 #[test]
+fn repo_listing_commands_use_filtered_map_even_when_raw_is_small() {
+    let cwd = fixture();
+    for command in ["find . -type f", "ls -R", "tree -L 2 ."] {
+        let output = run_agentgrep(&cwd, &["run", command, "--limit", "50", "--budget", "4000"]);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "{command}: {stdout}");
+        assert!(
+            stdout.contains("agentgrep optimized:"),
+            "{command}: {stdout}"
+        );
+        assert!(
+            stdout.contains("src/billing/stripe.ts"),
+            "{command}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("vendor/stripe-sdk.js"),
+            "{command}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("generated/schema.generated.ts"),
+            "{command}: {stdout}"
+        );
+        assert!(!stdout.contains(".agentgrep/tee"), "{command}: {stdout}");
+        assert!(stdout.contains("Exit code: 0"), "{command}: {stdout}");
+    }
+}
+
+#[test]
 fn shims_install_status_and_uninstall() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("shims");
@@ -188,6 +217,43 @@ fn shims_install_status_and_uninstall() {
     let uninstalled = run_agentgrep(tmp.path(), &["shims", "uninstall", "--dir", &dir_arg]);
     assert!(uninstalled.status.success());
     assert!(!dir.join("rg").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn shims_status_reports_shadowed_path_order() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let fake_bin = tmp.path().join("bin");
+    fs::create_dir_all(&fake_bin).unwrap();
+    let fake_find = fake_bin.join("find");
+    fs::write(&fake_find, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&fake_find).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_find, permissions).unwrap();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!(
+        "{}:{}:{}",
+        fake_bin.display(),
+        dir.display(),
+        env::var("PATH").unwrap_or_default()
+    );
+    let status = run_agentgrep_with_env(
+        tmp.path(),
+        &["shims", "status", "--dir", &dir_arg],
+        &[("PATH", &path)],
+    );
+    let stdout = String::from_utf8_lossy(&status.stdout);
+
+    assert!(status.status.success(), "{stdout}");
+    assert!(stdout.contains("PATH: present but shadowed"), "{stdout}");
+    assert!(stdout.contains("find: installed (shadowed by"), "{stdout}");
 }
 
 #[test]
@@ -277,6 +343,51 @@ fn rg_shim_raw_env_matches_real_output() {
     assert!(output.status.success());
     assert_eq!(output.stdout, b"sample.txt:needle\n");
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn listing_shims_use_filtered_map_by_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let cwd = tmp.path().join("repo");
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::create_dir_all(cwd.join("vendor")).unwrap();
+    fs::create_dir_all(cwd.join("generated")).unwrap();
+    fs::write(cwd.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(cwd.join("vendor/sdk.js"), "generated vendor code\n").unwrap();
+    fs::write(
+        cwd.join("generated/schema.generated.ts"),
+        "type Generated = {}\n",
+    )
+    .unwrap();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    for command in ["find . -type f", "ls -R"] {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(&cwd)
+            .env("PATH", &path)
+            .output()
+            .expect("listing shim runs");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        assert!(output.status.success(), "{command}: {stdout}");
+        assert!(
+            stdout.contains("agentgrep optimized:"),
+            "{command}: {stdout}"
+        );
+        assert!(stdout.contains("src/main.rs"), "{command}: {stdout}");
+        assert!(!stdout.contains("vendor/sdk.js"), "{command}: {stdout}");
+        assert!(
+            !stdout.contains("generated/schema.generated.ts"),
+            "{command}: {stdout}"
+        );
+    }
 }
 
 #[test]

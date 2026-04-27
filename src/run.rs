@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::command::{GitCommand, ParsedCommand, parse_command};
-use crate::exec::{command_exists, run_shell_capture, run_shell_capture_real_tools};
+use crate::exec::{run_shell_capture, run_shell_capture_real_tools};
 use crate::file_view;
 use crate::git_compact;
 use crate::line_read;
@@ -65,47 +65,13 @@ fn execute_run_inner(
             if !path.exists() {
                 return passthrough(command);
             }
-            let raw = run_shell_capture_real_tools(command, None)?;
-            if raw.exit_code != 0 || raw_fits_budget(options, &raw.stdout, &raw.stderr) {
-                return Ok(ExecResult::from_parts(
-                    raw.stdout,
-                    raw.stderr,
-                    raw.exit_code,
-                ));
-            }
-            let recovery_hint =
-                crate::tee::tee_raw_output(display_command, &raw.stdout, &raw.stderr, true);
-            repo_map::execute_map_with_recovery(
-                &path,
-                options,
-                Some(display_command.to_string()),
-                recovery_hint.as_deref(),
-            )
+            repo_map::execute_map(&path, options, Some(display_command.to_string()))
         }
         ParsedCommand::TreeMap { path } => {
             if !path.exists() {
                 return passthrough(command);
             }
-            if command_exists("tree").is_some() {
-                let raw = run_shell_capture_real_tools(command, None)?;
-                if raw.exit_code != 0 || raw_fits_budget(options, &raw.stdout, &raw.stderr) {
-                    return Ok(ExecResult::from_parts(
-                        raw.stdout,
-                        raw.stderr,
-                        raw.exit_code,
-                    ));
-                }
-                let recovery_hint =
-                    crate::tee::tee_raw_output(display_command, &raw.stdout, &raw.stderr, true);
-                repo_map::execute_map_with_recovery(
-                    &path,
-                    options,
-                    Some(display_command.to_string()),
-                    recovery_hint.as_deref(),
-                )
-            } else {
-                repo_map::execute_map(&path, options, Some(display_command.to_string()))
-            }
+            repo_map::execute_map(&path, options, Some(display_command.to_string()))
         }
         ParsedCommand::Cat { path } => {
             if !path.exists() {

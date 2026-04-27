@@ -117,23 +117,20 @@ pub fn render_map(
         options.budget,
         &mut budget_truncated,
     );
-    push_budgeted_line(
-        &mut out,
-        &format!(
-            "{} files under {}. Showing {}.",
+    let header = if summary.truncated {
+        format!(
+            "{} files under {}. Showing {}. Filters: ignored/hidden/generated/vendor/build/deps/binary.",
             summary.total_files, summary.root, summary.shown_files
-        ),
-        options.budget,
-        &mut budget_truncated,
-    );
-    push_budgeted_line(
-        &mut out,
-        "Filters: .gitignore, generated/vendor/build/dependency/binary files hidden.",
-        options.budget,
-        &mut budget_truncated,
-    );
+        )
+    } else {
+        format!(
+            "{} files under {}. Filters: ignored/hidden/generated/vendor/build/deps/binary.",
+            summary.total_files, summary.root
+        )
+    };
+    push_budgeted_line(&mut out, &header, options.budget, &mut budget_truncated);
 
-    if !summary.directories.is_empty() {
+    if summary.truncated && !summary.directories.is_empty() {
         push_budgeted_line(
             &mut out,
             "Directories:",
@@ -148,7 +145,9 @@ pub fn render_map(
         }
     }
 
-    push_budgeted_line(&mut out, "Files:", options.budget, &mut budget_truncated);
+    if summary.truncated {
+        push_budgeted_line(&mut out, "Files:", options.budget, &mut budget_truncated);
+    }
     for file in &summary.files {
         let line = format!("  {file}");
         if !push_budgeted_line(&mut out, &line, options.budget, &mut budget_truncated) {

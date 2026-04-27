@@ -19,7 +19,7 @@ export PATH="$HOME/.local/bin/agentgrep-shims:$PATH"
 agentgrep shims status --dir ~/.local/bin/agentgrep-shims
 ```
 
-Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree`. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, and they pass piped stdin directly to the real tool so shell pipelines keep streaming normally. Remove them with:
+Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree`. `agentgrep shims status` reports when the shim directory is present but shadowed by earlier system paths. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, and they pass piped stdin directly to the real tool so shell pipelines keep streaming normally. Remove them with:
 
 ```bash
 agentgrep shims uninstall --dir ~/.local/bin/agentgrep-shims
@@ -55,6 +55,7 @@ Safety defaults:
 
 - Small outputs that fit the current `--budget` pass through exactly.
 - Explicit bounded reads like `head`, `tail`, `sed -n`, and small `cat` calls stay raw unless they exceed the budget.
+- Repo listing commands like `find . -type f`, `ls -R`, and `tree` use the filtered in-process map by default; use `--raw` for original listings.
 - Complex `rg`/`grep` forms with filters, sort options, context flags, or `-e` patterns compact the actual raw result stream instead of re-running an approximate search.
 - Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `.agentgrep/tee`.
 - Set `AGENTGREP_DISABLE=1` to bypass proxy optimization for `agentgrep run`.

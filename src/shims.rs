@@ -86,11 +86,7 @@ fn install(args: ShimsInstallArgs) -> Result<ExecResult> {
         out.push_str("Exit code: 1\n");
         return Ok(ExecResult::from_parts(out, Vec::new(), 1));
     }
-    if !path_has_dir(&dir) {
-        out.push_str("PATH: not active; prepend this directory to PATH to use the shims.\n");
-    } else {
-        out.push_str("PATH: active\n");
-    }
+    out.push_str(&format!("PATH: {}\n", path_activation_summary(&dir)));
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
 }
@@ -136,26 +132,26 @@ fn status(args: ShimsDirArgs) -> Result<ExecResult> {
     let mut installed = 0;
     let mut conflicts = 0;
     let mut out = String::new();
+    let path_present = path_has_dir(&dir);
     out.push_str("agentgrep shims status\n");
     out.push_str(&format!("dir: {}\n", dir.display()));
-    out.push_str(&format!(
-        "PATH: {}\n",
-        if path_has_dir(&dir) {
-            "active"
-        } else {
-            "not active"
-        }
-    ));
+    out.push_str(&format!("PATH: {}\n", path_activation_summary(&dir)));
     for command in SHIM_COMMANDS {
         let path = dir.join(command);
         let state = if !path.exists() {
-            "missing"
+            "missing".to_string()
         } else if is_agentgrep_shim(&path)? {
             installed += 1;
-            "installed"
+            if !path_present {
+                "installed (not on PATH)".to_string()
+            } else if let Some(shadow) = shadowing_executable(command, &path) {
+                format!("installed (shadowed by {})", shadow.display())
+            } else {
+                "installed".to_string()
+            }
         } else {
             conflicts += 1;
-            "conflict"
+            "conflict".to_string()
         };
         out.push_str(&format!("{command}: {state}\n"));
     }
@@ -290,6 +286,55 @@ fn path_has_dir(dir: &Path) -> bool {
             .map(|entry| entry == target)
             .unwrap_or(false)
     })
+}
+
+fn path_activation_summary(dir: &Path) -> String {
+    if !path_has_dir(dir) {
+        return format!(
+            "not active; prepend {} to PATH to use the shims.",
+            dir.display()
+        );
+    }
+
+    let shadowed = shadowed_commands(dir);
+    if shadowed.is_empty() {
+        "active".to_string()
+    } else {
+        let (command, path) = &shadowed[0];
+        format!(
+            "present but shadowed; prepend {} before system paths (for example, {command} resolves to {}).",
+            dir.display(),
+            path.display()
+        )
+    }
+}
+
+fn shadowed_commands(dir: &Path) -> Vec<(&'static str, PathBuf)> {
+    SHIM_COMMANDS
+        .iter()
+        .filter_map(|command| {
+            let shim = dir.join(command);
+            if !shim.exists() || !is_agentgrep_shim(&shim).unwrap_or(false) {
+                return None;
+            }
+            shadowing_executable(command, &shim).map(|path| (*command, path))
+        })
+        .collect()
+}
+
+fn shadowing_executable(command: &str, shim: &Path) -> Option<PathBuf> {
+    let first = first_executable_on_path(command)?;
+    (!same_path(&first, shim)).then_some(first)
+}
+
+fn first_executable_on_path(command: &str) -> Option<PathBuf> {
+    for entry in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
+        let candidate = entry.join(command);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn canonical_or_self(path: &Path) -> Result<PathBuf> {
