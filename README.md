@@ -19,7 +19,7 @@ export PATH="$HOME/.local/bin/agentgrep-shims:$PATH"
 agentgrep shims status --dir ~/.local/bin/agentgrep-shims
 ```
 
-Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree`. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing. Remove them with:
+Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree`. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, and they pass piped stdin directly to the real tool so shell pipelines keep streaming normally. Remove them with:
 
 ```bash
 agentgrep shims uninstall --dir ~/.local/bin/agentgrep-shims
@@ -59,6 +59,7 @@ Safety defaults:
 - Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `.agentgrep/tee`.
 - Set `AGENTGREP_DISABLE=1` to bypass proxy optimization for `agentgrep run`.
 - Set `AGENTGREP_TEE=0` to disable full-output tee files.
+- Shims also read `AGENTGREP_LIMIT`, `AGENTGREP_BUDGET`, `AGENTGREP_RAW`, `AGENTGREP_JSON`, and `AGENTGREP_EXACT` for default output behavior.
 
 ## Direct commands
 

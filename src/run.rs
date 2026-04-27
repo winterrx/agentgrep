@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::command::{GitCommand, ParsedCommand, parse_command};
-use crate::exec::{command_exists, run_shell_capture};
+use crate::exec::{command_exists, run_shell_capture, run_shell_capture_real_tools};
 use crate::file_view;
 use crate::git_compact;
 use crate::line_read;
@@ -57,7 +57,6 @@ fn execute_run_inner(
         Ok(parsed) => parsed,
         Err(_) => return passthrough(command),
     };
-
     match parsed {
         ParsedCommand::Search(search_command) => {
             execute_search_proxy(command, display_command, search_command, options)
@@ -66,7 +65,7 @@ fn execute_run_inner(
             if !path.exists() {
                 return passthrough(command);
             }
-            let raw = run_shell_capture(command, None)?;
+            let raw = run_shell_capture_real_tools(command, None)?;
             if raw.exit_code != 0 || raw_fits_budget(options, &raw.stdout, &raw.stderr) {
                 return Ok(ExecResult::from_parts(
                     raw.stdout,
@@ -88,7 +87,7 @@ fn execute_run_inner(
                 return passthrough(command);
             }
             if command_exists("tree").is_some() {
-                let raw = run_shell_capture(command, None)?;
+                let raw = run_shell_capture_real_tools(command, None)?;
                 if raw.exit_code != 0 || raw_fits_budget(options, &raw.stdout, &raw.stderr) {
                     return Ok(ExecResult::from_parts(
                         raw.stdout,
@@ -145,7 +144,7 @@ fn execute_search_proxy(
     search_command: crate::command::SearchCommand,
     options: OutputOptions,
 ) -> Result<ExecResult> {
-    let raw = run_shell_capture(command, None)?;
+    let raw = run_shell_capture_real_tools(command, None)?;
     if raw_fits_budget(options, &raw.stdout, &raw.stderr) {
         return Ok(ExecResult::from_parts(
             raw.stdout,

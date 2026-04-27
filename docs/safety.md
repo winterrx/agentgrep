@@ -13,9 +13,11 @@ Safety policy:
 - Truncated proxy output should include a raw rerun hint and, when the raw output is large enough, a `.agentgrep/tee` full-output file.
 - `AGENTGREP_DISABLE=1` disables proxy optimization for `agentgrep run`.
 - `AGENTGREP_TEE=0` disables full-output tee files.
+- Shims read output defaults from `AGENTGREP_LIMIT`, `AGENTGREP_BUDGET`, `AGENTGREP_RAW`, `AGENTGREP_JSON`, and `AGENTGREP_EXACT`.
 - Trace recording stores command metadata only, never stdout/stderr content.
 - Trace replay only executes safe read-only discovery commands; mutating git, unsupported commands, shell control operators, and redirections are skipped.
 - Shims are opt-in, reversible, refuse to overwrite non-agentgrep files unless `--force` is passed, and resolve the real executable before proxying to avoid recursion.
+- Shims pass piped or file stdin directly to the real executable so Unix pipelines keep normal streaming behavior.
 
 RTK reference notes:
 

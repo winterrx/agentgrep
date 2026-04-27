@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::cli::BenchArgs;
 use crate::command::{ParsedCommand, parse_command};
-use crate::exec::{command_exists, run_shell_capture};
+use crate::exec::{command_exists, run_shell_capture_real_tools};
 use crate::output::{ExecResult, OutputOptions, estimate_tokens_from_bytes, json_result};
 use crate::{run, search};
 
@@ -210,7 +210,7 @@ pub(crate) fn run_benchmark(
     options: OutputOptions,
 ) -> Result<BenchSummary> {
     let raw = timed(|| {
-        let captured = run_shell_capture(command, None)?;
+        let captured = run_shell_capture_real_tools(command, None)?;
         Ok(ExecResult::from_parts(
             captured.stdout,
             captured.stderr,

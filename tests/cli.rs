@@ -213,14 +213,70 @@ fn rg_shim_proxies_without_recursing() {
         .current_dir(&cwd)
         .env("PATH", path)
         .env("AGENTGREP_TEE", "0")
+        .env("AGENTGREP_LIMIT", "2")
         .output()
         .expect("rg shim runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success());
     assert!(stdout.contains("agentgrep optimized: rg needle"));
+    assert!(stdout.contains("Showing 2."));
     assert!(stdout.contains("huge.txt:"));
     assert!(stdout.contains("Exit code: 0"));
+}
+
+#[test]
+fn rg_shim_preserves_stdin_pipeline() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("printf 'needle\\nnope\\n' | rg needle")
+        .env("PATH", path)
+        .output()
+        .expect("rg stdin shim runs");
+
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"needle\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn rg_shim_raw_env_matches_real_output() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let cwd = tmp.path().join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::write(cwd.join("sample.txt"), "needle\nnope\n").unwrap();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("rg needle")
+        .current_dir(&cwd)
+        .env("PATH", path)
+        .env("AGENTGREP_RAW", "1")
+        .output()
+        .expect("raw rg shim runs");
+
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"sample.txt:needle\n");
+    assert!(output.stderr.is_empty());
 }
 
 #[test]

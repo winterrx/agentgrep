@@ -87,7 +87,7 @@ fn execute_raw_regex(pattern: &str, paths: &[PathBuf], exact: bool) -> Result<Ex
         command.push(' ');
         command.push_str(&shell_words::quote(&path.display().to_string()));
     }
-    let captured = crate::exec::run_shell_capture(&command, None)?;
+    let captured = crate::exec::run_shell_capture_real_tools(&command, None)?;
     Ok(ExecResult::from_parts(
         captured.stdout,
         captured.stderr,

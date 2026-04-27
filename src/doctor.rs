@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::exec::{command_exists, run_shell_capture};
+use crate::exec::{command_exists, run_shell_capture_real_tools};
 use crate::output::{ExecResult, OutputOptions, json_result, status_footer};
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,7 +61,7 @@ pub fn execute_doctor(options: OutputOptions) -> Result<ExecResult> {
 fn tool_status(name: &str, version_command: &str) -> ToolStatus {
     let path = command_exists(name);
     let version = path.as_ref().and_then(|_| {
-        run_shell_capture(version_command, None)
+        run_shell_capture_real_tools(version_command, None)
             .ok()
             .and_then(|captured| {
                 String::from_utf8(captured.stdout)
@@ -77,7 +77,7 @@ fn tool_status(name: &str, version_command: &str) -> ToolStatus {
 }
 
 fn is_git_repo() -> bool {
-    run_shell_capture("git rev-parse --is-inside-work-tree", None)
+    run_shell_capture_real_tools("git rev-parse --is-inside-work-tree", None)
         .map(|captured| captured.exit_code == 0)
         .unwrap_or(false)
 }

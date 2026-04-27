@@ -24,7 +24,7 @@ pub fn execute_git(
 ) -> Result<ExecResult> {
     let options = options.normalized();
     if options.raw {
-        let captured = crate::exec::run_shell_capture(command, None)?;
+        let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
         return Ok(ExecResult::from_parts(
             captured.stdout,
             captured.stderr,
@@ -32,7 +32,7 @@ pub fn execute_git(
         ));
     }
 
-    let captured = crate::exec::run_shell_capture(command, None)?;
+    let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
     if raw_fits_budget(options, &captured.stdout, &captured.stderr) {
         return Ok(ExecResult::from_parts(
             captured.stdout,

@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -8,10 +8,16 @@ fn main() -> ExitCode {
             let mut stderr = std::io::stderr().lock();
 
             if let Err(error) = stdout.write_all(&result.stdout) {
+                if error.kind() == ErrorKind::BrokenPipe {
+                    return ExitCode::SUCCESS;
+                }
                 eprintln!("agentgrep: failed to write stdout: {error}");
                 return ExitCode::from(1);
             }
             if let Err(error) = stderr.write_all(&result.stderr) {
+                if error.kind() == ErrorKind::BrokenPipe {
+                    return ExitCode::SUCCESS;
+                }
                 eprintln!("agentgrep: failed to write stderr: {error}");
                 return ExitCode::from(1);
             }

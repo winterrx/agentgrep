@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::command::{FileSliceCommand, FileSliceRange};
-use crate::exec::run_shell_capture;
+use crate::exec::run_shell_capture_real_tools;
 use crate::file_view;
 use crate::output::{
     ExecResult, OutputOptions, json_result, push_budgeted_line, raw_fits_budget, status_footer,
@@ -28,7 +28,7 @@ pub fn execute_file_slice(
     slice: FileSliceCommand,
     options: OutputOptions,
 ) -> Result<ExecResult> {
-    let raw = run_shell_capture(command, None)?;
+    let raw = run_shell_capture_real_tools(command, None)?;
     if raw.exit_code != 0
         || !slice.path.is_file()
         || raw_fits_budget(options.normalized(), &raw.stdout, &raw.stderr)
@@ -59,7 +59,7 @@ pub fn execute_wc_lines(
     options: OutputOptions,
 ) -> Result<ExecResult> {
     let options = options.normalized();
-    let raw = run_shell_capture(command, None)?;
+    let raw = run_shell_capture_real_tools(command, None)?;
     if raw.exit_code != 0
         || paths.iter().any(|path| !path.is_file())
         || raw_fits_budget(options, &raw.stdout, &raw.stderr)

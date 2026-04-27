@@ -1,5 +1,6 @@
 use serde::Serialize;
 use serde_json::Value;
+use std::env;
 
 #[derive(Debug, Clone, Copy)]
 pub struct OutputOptions {
@@ -30,6 +31,28 @@ impl OutputOptions {
             ..self
         }
     }
+
+    pub fn from_env_defaults() -> Self {
+        let mut options = Self::default();
+        options.raw = env_flag("AGENTGREP_RAW").unwrap_or(options.raw);
+        options.json = env_flag("AGENTGREP_JSON").unwrap_or(options.json);
+        options.exact = env_flag("AGENTGREP_EXACT").unwrap_or(options.exact);
+        options.limit = env_usize("AGENTGREP_LIMIT").unwrap_or(options.limit);
+        options.budget = env_usize("AGENTGREP_BUDGET").unwrap_or(options.budget);
+        options
+    }
+}
+
+fn env_flag(name: &str) -> Option<bool> {
+    match env::var(name).ok()?.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    env::var(name).ok()?.parse().ok()
 }
 
 #[derive(Debug, Clone)]

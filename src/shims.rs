@@ -24,13 +24,19 @@ pub fn execute_shim_exec(args: ShimExecArgs) -> Result<ExecResult> {
     if !SHIM_COMMANDS.contains(&args.program.as_str()) {
         bail!("unsupported shim command: {}", args.program);
     }
-    let program = resolve_real_program(&args.program)?;
-    let command = shell_command(&program.display().to_string(), &args.args);
     let display_command = shell_command(&args.program, &args.args);
+    let command = match resolve_real_program(&args.program)? {
+        Some(program) => shell_command(&program.display().to_string(), &args.args),
+        None if args.program == "tree" => display_command.clone(),
+        None => bail!(
+            "could not find real executable for shimmed command: {}",
+            args.program
+        ),
+    };
     crate::run::execute_run_with_trace_label(
         &command,
         &display_command,
-        OutputOptions::default(),
+        OutputOptions::from_env_defaults(),
         None,
     )
 }
@@ -54,8 +60,12 @@ fn install(args: ShimsInstallArgs) -> Result<ExecResult> {
             ));
             continue;
         }
-        fs::write(&path, shim_script(command, &agentgrep)?)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        let real_program = resolve_real_program(command)?;
+        fs::write(
+            &path,
+            shim_script(command, &agentgrep, real_program.as_deref())?,
+        )
+        .with_context(|| format!("failed to write {}", path.display()))?;
         make_executable(&path)?;
         installed.push(path.display().to_string());
     }
@@ -171,10 +181,25 @@ fn shell_command(program: &str, args: &[String]) -> String {
     command
 }
 
-fn shim_script(command: &str, agentgrep: &Path) -> Result<String> {
+fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> Result<String> {
     let agentgrep = agentgrep
         .to_str()
         .ok_or_else(|| anyhow!("agentgrep path is not valid UTF-8: {}", agentgrep.display()))?;
+    let stdin_passthrough = match real_program {
+        Some(real_program) => {
+            let real_program = real_program.to_str().ok_or_else(|| {
+                anyhow!(
+                    "real executable path is not valid UTF-8: {}",
+                    real_program.display()
+                )
+            })?;
+            format!(
+                "if [ -p /dev/stdin ] || {{ [ ! -t 0 ] && [ -s /dev/stdin ]; }}; then\n  exec {} \"$@\"\nfi\n",
+                shell_single_quote(real_program)
+            )
+        }
+        None => String::new(),
+    };
     Ok(format!(
         r#"#!/bin/sh
 {marker}
@@ -201,15 +226,17 @@ IFS=$old_ifs
 export PATH=$new_path
 export AGENTGREP_SHIM_DIR=$shim_dir
 export AGENTGREP_SHIM_ACTIVE=1
+{stdin_passthrough}
 exec {agentgrep} shim-exec {command} -- "$@"
 "#,
         marker = SHIM_MARKER,
+        stdin_passthrough = stdin_passthrough,
         agentgrep = shell_single_quote(agentgrep),
         command = shell_single_quote(command),
     ))
 }
 
-fn resolve_real_program(program: &str) -> Result<PathBuf> {
+fn resolve_real_program(program: &str) -> Result<Option<PathBuf>> {
     let shim_dir = env::var_os("AGENTGREP_SHIM_DIR").map(PathBuf::from);
     for entry in env::split_paths(&env::var_os("PATH").unwrap_or_default()) {
         if shim_dir
@@ -226,9 +253,9 @@ fn resolve_real_program(program: &str) -> Result<PathBuf> {
         if is_agentgrep_shim(&candidate).unwrap_or(false) {
             continue;
         }
-        return Ok(candidate);
+        return Ok(Some(candidate));
     }
-    bail!("could not find real executable for shimmed command: {program}")
+    Ok(None)
 }
 
 fn is_agentgrep_shim(path: &Path) -> Result<bool> {
@@ -328,10 +355,16 @@ mod tests {
 
     #[test]
     fn shim_script_removes_its_dir_from_path() {
-        let script = shim_script("rg", Path::new("/tmp/agentgrep")).unwrap();
+        let script = shim_script(
+            "rg",
+            Path::new("/tmp/agentgrep"),
+            Some(Path::new("/opt/bin/rg")),
+        )
+        .unwrap();
         assert!(script.contains(SHIM_MARKER));
         assert!(script.contains("export PATH=$new_path"));
         assert!(script.contains("export AGENTGREP_SHIM_DIR=$shim_dir"));
+        assert!(script.contains("exec '/opt/bin/rg' \"$@\""));
         assert!(script.contains("shim-exec 'rg' -- \"$@\""));
     }
 }
