@@ -71,8 +71,6 @@ pub fn is_excluded_path(path: &Path) -> bool {
                 | ".turbo"
                 | ".cache"
                 | "out"
-                | "tmp"
-                | "temp"
         ) {
             return true;
         }
@@ -167,6 +165,7 @@ mod tests {
     fn excludes_generated_vendor_and_locks() {
         assert!(is_excluded_path(Path::new("node_modules/pkg/index.js")));
         assert!(is_excluded_path(Path::new("src/api.generated.ts")));
+        assert!(!is_excluded_path(Path::new("/tmp/agentgrep/src/main.rs")));
         assert!(is_lockfile(Path::new("Cargo.lock")));
         assert!(should_include_file(Path::new("src/main.rs")));
     }
