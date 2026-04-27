@@ -12,6 +12,8 @@ pub enum ParsedCommand {
     FileSlice(FileSliceCommand),
     WcLines { paths: Vec<PathBuf> },
     Git(GitCommand),
+    Test(TestCommand),
+    Deps { path: PathBuf },
     Unsupported { reason: String },
 }
 
@@ -94,6 +96,13 @@ pub enum GitReadOnly {
     Blame,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TestCommand {
+    CargoTest,
+    Pytest,
+    GoTest,
+}
+
 impl GitReadOnly {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -143,10 +152,65 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand, ParseCommandError> 
         "nl" => parse_numbered_sed(&words),
         "wc" => parse_wc(&words),
         "git" => Ok(parse_git(&words)),
+        "cargo" => parse_cargo(&words),
+        "pytest" | "py.test" => parse_pytest(&words),
+        "python" | "python3" => parse_python(&words),
+        "go" => parse_go(&words),
+        "deps" => parse_deps(&words),
         _ => Ok(ParsedCommand::Unsupported {
             reason: format!("unsupported command: {}", words[0]),
         }),
     }
+}
+
+fn parse_cargo(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    if words.get(1).map(String::as_str) == Some("test") {
+        Ok(ParsedCommand::Test(TestCommand::CargoTest))
+    } else {
+        Ok(ParsedCommand::Unsupported {
+            reason: "cargo command is not cargo test".to_string(),
+        })
+    }
+}
+
+fn parse_pytest(_words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    Ok(ParsedCommand::Test(TestCommand::Pytest))
+}
+
+fn parse_python(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    if words.get(1).map(String::as_str) == Some("-m")
+        && words.get(2).map(String::as_str) == Some("pytest")
+    {
+        Ok(ParsedCommand::Test(TestCommand::Pytest))
+    } else {
+        Ok(ParsedCommand::Unsupported {
+            reason: "python command is not python -m pytest".to_string(),
+        })
+    }
+}
+
+fn parse_go(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    if words.get(1).map(String::as_str) == Some("test") {
+        Ok(ParsedCommand::Test(TestCommand::GoTest))
+    } else {
+        Ok(ParsedCommand::Unsupported {
+            reason: "go command is not go test".to_string(),
+        })
+    }
+}
+
+fn parse_deps(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    if words.len() > 2 {
+        return Ok(ParsedCommand::Unsupported {
+            reason: "deps accepts at most one path".to_string(),
+        });
+    }
+    Ok(ParsedCommand::Deps {
+        path: words
+            .get(1)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(".")),
+    })
 }
 
 fn parse_tree(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
@@ -1110,6 +1174,36 @@ mod tests {
                     "HEAD".to_string()
                 ],
             })
+        );
+    }
+
+    #[test]
+    fn parses_test_runner_commands() {
+        assert_eq!(
+            parse_command("cargo test -- --nocapture").unwrap(),
+            ParsedCommand::Test(TestCommand::CargoTest)
+        );
+        assert_eq!(
+            parse_command("pytest tests -q").unwrap(),
+            ParsedCommand::Test(TestCommand::Pytest)
+        );
+        assert_eq!(
+            parse_command("python -m pytest tests").unwrap(),
+            ParsedCommand::Test(TestCommand::Pytest)
+        );
+        assert_eq!(
+            parse_command("go test ./...").unwrap(),
+            ParsedCommand::Test(TestCommand::GoTest)
+        );
+    }
+
+    #[test]
+    fn parses_deps_command() {
+        assert_eq!(
+            parse_command("deps .").unwrap(),
+            ParsedCommand::Deps {
+                path: PathBuf::from(".")
+            }
         );
     }
 }

@@ -19,7 +19,7 @@ export PATH="$HOME/.local/bin/agentgrep-shims:$PATH"
 agentgrep shims status --dir ~/.local/bin/agentgrep-shims
 ```
 
-Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree`. `agentgrep shims status` reports when the shim directory is present but shadowed by earlier system paths. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, pass piped stdin directly to the real tool, and decline optimization when a parent shell command contains a pipeline or redirection. Remove them with:
+Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, `tree`, `cargo`, `pytest`, `py.test`, `python`, `python3`, `go`, and `deps`. `agentgrep shims status` reports when the shim directory is present but shadowed by earlier system paths. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, pass piped stdin directly to the real tool, and decline optimization when a parent shell command contains a pipeline or redirection. Remove them with:
 
 ```bash
 agentgrep shims uninstall --dir ~/.local/bin/agentgrep-shims
@@ -42,8 +42,14 @@ agentgrep run "wc -l src/main.rs"
 agentgrep run "tree -L 2 ."
 agentgrep run "git status"
 agentgrep run "git diff"
+agentgrep run "git log"
 agentgrep run "git grep createSubscription -- src"
 agentgrep run "git ls-tree -r --name-only HEAD"
+agentgrep run "cargo test -- --list"
+agentgrep run "pytest -q"
+agentgrep run "python -m pytest -q"
+agentgrep run "go test ./..."
+agentgrep run "deps"
 ```
 
 Unsupported commands and mutating `git` commands are passed through unchanged in V1. Use `--raw` for exact passthrough output:
@@ -59,6 +65,9 @@ Safety defaults:
 - Repo listing commands like `find . -type f`, supported `find -name`/`-iname`/`-maxdepth`/`-mindepth` forms, `ls -R`, and `tree` use the filtered in-process map by default; use `--raw` for original listings.
 - Unsupported `find` predicates such as pruning, boolean expressions, execs, deletes, path regexes, and unknown tests pass through to the real tool for exact semantics.
 - Complex `rg`/`grep` forms with filters, sort options, context flags, or `-e` patterns compact the actual raw result stream instead of re-running an approximate search.
+- Plain/verbose `git log` is rendered through a compact format that keeps commit hash, subject, relative date, author, and a few body lines; explicit user formats such as `--oneline`, `--pretty`, and `--format` are preserved.
+- `cargo test`, `pytest`, `python -m pytest`, and `go test` are recognized as test-runner commands. V1 only compacts large stdout while preserving stderr byte-for-byte, so compile errors and runner diagnostics are not silently hidden.
+- `deps` summarizes dependency manifests (`Cargo.toml`, `package.json`, `requirements.txt`, `pyproject.toml`, and `go.mod`) without pretending to be an exact manifest read.
 - Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `.agentgrep/tee`.
 - `--raw`, `AGENTGREP_DISABLE=1`, unsupported shimmed commands, and mutating `git` passthrough all bypass active agentgrep shim directories before running the underlying command.
 - Set `AGENTGREP_DISABLE=1` to bypass proxy optimization for `agentgrep run`.
@@ -74,6 +83,7 @@ agentgrep file src/billing/stripe.ts
 agentgrep file src/billing/stripe.ts --lines 72:112
 agentgrep map .
 agentgrep index .
+agentgrep deps .
 agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed
 agentgrep bench --suite discovery --compare raw,proxy,indexed
 agentgrep bench --suite all --compare raw,proxy,indexed

@@ -1020,6 +1020,8 @@ fn replay_safety(command: &str) -> std::result::Result<(), String> {
         | ParsedCommand::Cat { .. }
         | ParsedCommand::FileSlice(_)
         | ParsedCommand::WcLines { .. }
+        | ParsedCommand::Test(_)
+        | ParsedCommand::Deps { .. }
         | ParsedCommand::Git(GitCommand::ReadOnly { .. }) => Ok(()),
         ParsedCommand::Git(GitCommand::Mutating { .. }) => Err("mutating git command".to_string()),
         ParsedCommand::Unsupported { reason } => Err(reason),
@@ -1065,6 +1067,12 @@ fn command_family(command: &str) -> String {
             FileSliceKind::NumberedSed => "nl|sed".to_string(),
         },
         Ok(ParsedCommand::WcLines { .. }) => "wc -l".to_string(),
+        Ok(ParsedCommand::Test(runner)) => match runner {
+            crate::command::TestCommand::CargoTest => "cargo test".to_string(),
+            crate::command::TestCommand::Pytest => "pytest".to_string(),
+            crate::command::TestCommand::GoTest => "go test".to_string(),
+        },
+        Ok(ParsedCommand::Deps { .. }) => "deps".to_string(),
         Ok(ParsedCommand::Git(GitCommand::ReadOnly { subcommand, .. })) => {
             format!("git {}", subcommand.as_str())
         }

@@ -37,6 +37,11 @@ pub fn execute_git(
     {
         return execute_status_porcelain(command, &porcelain_command, options);
     }
+    if subcommand == GitReadOnly::Log
+        && let Some(compact_command) = log_compact_command(command, options.limit)
+    {
+        return execute_log_compact(command, &compact_command, options);
+    }
 
     let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
     if raw_fits_budget(options, &captured.stdout, &captured.stderr) {
@@ -60,6 +65,39 @@ pub fn execute_git(
         captured.exit_code,
         &captured.stderr,
         recovery_hint.as_deref(),
+    )
+}
+
+fn execute_log_compact(
+    command: &str,
+    compact_command: &str,
+    options: OutputOptions,
+) -> Result<ExecResult> {
+    let captured = crate::exec::run_shell_capture_real_tools(compact_command, None)?;
+    if captured.exit_code != 0 {
+        return Ok(ExecResult::from_parts(
+            captured.stdout,
+            captured.stderr,
+            captured.exit_code,
+        ));
+    }
+    let text = String::from_utf8_lossy(&captured.stdout);
+    let lines = compact_log_output(&text, options.limit, false);
+    let summary = GitSummary {
+        subcommand: "log".to_string(),
+        raw_lines: text.lines().count(),
+        shown_lines: lines.len(),
+        omitted_lines: 0,
+        truncated: false,
+        lines,
+    };
+    render_git(
+        command,
+        &summary,
+        options,
+        captured.exit_code,
+        &captured.stderr,
+        None,
     )
 }
 
@@ -158,6 +196,45 @@ fn status_porcelain_command(command: &str) -> Option<String> {
         "--porcelain".to_string(),
         "-b".to_string(),
     ]);
+    Some(shell_join(&compact))
+}
+
+fn log_compact_command(command: &str, limit: usize) -> Option<String> {
+    let words = shell_words::split(command).ok()?;
+    let log_index = words.iter().position(|word| word == "log")?;
+    let args = &words[log_index + 1..];
+    if args.iter().any(|arg| {
+        arg == "--oneline"
+            || arg.starts_with("--pretty")
+            || arg.starts_with("--format")
+            || arg == "--raw"
+            || arg == "--patch"
+            || arg == "-p"
+    }) {
+        return None;
+    }
+
+    let has_limit = args.iter().any(|arg| {
+        (arg.starts_with('-')
+            && arg
+                .get(1..2)
+                .is_some_and(|c| c.chars().all(|c| c.is_ascii_digit())))
+            || arg == "-n"
+            || arg.starts_with("--max-count")
+    });
+    let wants_merges = args
+        .iter()
+        .any(|arg| arg == "--merges" || arg == "--min-parents=2");
+
+    let mut compact = words[..=log_index].to_vec();
+    compact.push("--pretty=format:%h %s (%cr) <%an>%n%b%n---END---".to_string());
+    if !has_limit {
+        compact.push(format!("-{}", limit.max(1)));
+    }
+    if !wants_merges {
+        compact.push("--no-merges".to_string());
+    }
+    compact.extend(args.iter().cloned());
     Some(shell_join(&compact))
 }
 
@@ -279,8 +356,56 @@ fn compact_status(lines: &[String], limit: usize) -> Vec<String> {
     out
 }
 
+fn compact_log_output(output: &str, limit: usize, user_set_limit: bool) -> Vec<String> {
+    let truncate_width = if user_set_limit { 120 } else { 80 };
+    let mut out = Vec::new();
+    for block in output.split("---END---").take(limit) {
+        let block = block.trim();
+        if block.is_empty() {
+            continue;
+        }
+        let mut lines = block.lines();
+        let Some(header) = lines.next() else {
+            continue;
+        };
+        out.push(truncate_chars(header.trim(), truncate_width));
+        let body_lines = lines
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.starts_with("Signed-off-by:")
+                    && !line.starts_with("Co-authored-by:")
+            })
+            .collect::<Vec<_>>();
+        for body in body_lines.iter().take(3) {
+            out.push(format!("  {}", truncate_chars(body, truncate_width)));
+        }
+        if body_lines.len() > 3 {
+            out.push(format!(
+                "  [+{} body line(s) omitted]",
+                body_lines.len() - 3
+            ));
+        }
+    }
+    out
+}
+
+fn truncate_chars(line: &str, width: usize) -> String {
+    if line.chars().count() <= width {
+        line.to_string()
+    } else {
+        format!(
+            "{}...",
+            line.chars()
+                .take(width.saturating_sub(3))
+                .collect::<String>()
+        )
+    }
+}
+
 fn compact_patch(lines: &[String], limit: usize) -> Vec<String> {
     let mut out = Vec::new();
+    let mut omitted_context = false;
     for line in lines {
         let keep = line.starts_with("diff --git ")
             || line.starts_with("index ")
@@ -291,10 +416,18 @@ fn compact_patch(lines: &[String], limit: usize) -> Vec<String> {
             || line.starts_with('-');
         if keep {
             out.push(line.clone());
+        } else if !line.is_empty() {
+            omitted_context = true;
         }
         if out.len() >= limit {
             break;
         }
+    }
+    if omitted_context && out.len() < limit {
+        out.push(
+            "Context: unchanged patch context lines omitted; use --raw for exact patch."
+                .to_string(),
+        );
     }
     if out.is_empty() {
         out.extend(lines.iter().take(limit).cloned());
@@ -412,5 +545,24 @@ mod tests {
             "git -C ../repo status --porcelain -b"
         );
         assert!(status_porcelain_command("git status --short").is_none());
+    }
+
+    #[test]
+    fn log_compact_command_respects_user_formats() {
+        let command = log_compact_command("git -C ../repo log", 8).unwrap();
+        assert!(command.contains("--pretty=format:"));
+        assert!(command.contains("-8"));
+        assert!(command.contains("--no-merges"));
+        assert!(log_compact_command("git log --oneline -n 20", 8).is_none());
+        assert!(log_compact_command("git log --format='%h %s'", 8).is_none());
+    }
+
+    #[test]
+    fn compact_log_output_keeps_header_and_body_context() {
+        let output = "abc1234 subject line (2 days ago) <alice>\nbody one\nbody two\nbody three\nbody four\n---END---\n";
+        let lines = compact_log_output(output, 8, false);
+        assert_eq!(lines[0], "abc1234 subject line (2 days ago) <alice>");
+        assert_eq!(lines[1], "  body one");
+        assert!(lines.iter().any(|line| line.contains("omitted")));
     }
 }

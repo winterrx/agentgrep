@@ -490,6 +490,17 @@ fn all_suite_commands() -> Result<Vec<String>> {
             ));
         }
     }
+    if Path::new("Cargo.toml").is_file() {
+        commands.push("cargo test --quiet -- --list".to_string());
+    }
+    if command_exists("pytest").is_some()
+        && (Path::new("pyproject.toml").is_file() || Path::new("pytest.ini").is_file())
+    {
+        commands.push("pytest --collect-only -q".to_string());
+    }
+    if Path::new("go.mod").is_file() {
+        commands.push("go test ./...".to_string());
+    }
     Ok(commands)
 }
 
@@ -702,6 +713,7 @@ mod tests {
             "sed -n '1,40p' ",
             "nl -ba ",
             "wc -l ",
+            "cargo test ",
         ] {
             assert!(
                 commands.iter().any(|command| command.starts_with(expected)),

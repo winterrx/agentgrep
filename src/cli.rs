@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 
 use crate::bench;
+use crate::deps;
 use crate::doctor;
 use crate::file_view;
 use crate::index;
@@ -41,6 +42,8 @@ pub enum Commands {
     Bench(BenchArgs),
     /// Record, import, summarize, and replay agent command traces.
     Trace(TraceArgs),
+    /// Summarize project dependency manifests.
+    Deps(DepsArgs),
     /// Install or inspect opt-in shell command shims.
     Shims(ShimsArgs),
     /// Execute a command from an installed shim.
@@ -117,6 +120,15 @@ pub struct FileArgs {
 #[derive(Debug, Args)]
 pub struct MapArgs {
     /// Path to map. Defaults to the current directory.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    #[command(flatten)]
+    pub output: CommonOutputArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct DepsArgs {
+    /// Directory or manifest path to inspect. Defaults to the current directory.
     #[arg(default_value = ".")]
     pub path: PathBuf,
     #[command(flatten)]
@@ -309,6 +321,7 @@ pub fn execute(cli: Cli) -> Result<ExecResult> {
         Commands::Index(args) => index::execute_index(&args.path, (&args.output).into()),
         Commands::Bench(args) => bench::execute_bench(args),
         Commands::Trace(args) => trace::execute_trace(args),
+        Commands::Deps(args) => deps::execute_deps(&args.path, (&args.output).into()),
         Commands::Shims(args) => shims::execute_shims(args),
         Commands::ShimExec(args) => shims::execute_shim_exec(args),
         Commands::Doctor(args) => doctor::execute_doctor((&args.output).into()),

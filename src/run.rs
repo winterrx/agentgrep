@@ -96,6 +96,8 @@ fn execute_run_inner(
             git_compact::execute_git(command, subcommand, options)
         }
         ParsedCommand::Git(GitCommand::Mutating { .. }) => passthrough_real_tools(command),
+        ParsedCommand::Test(runner) => crate::test_runner::execute_test(command, runner, options),
+        ParsedCommand::Deps { path } => crate::deps::execute_deps(&path, options),
         ParsedCommand::Unsupported { .. } if is_shimmed_command_family(command) => {
             passthrough_real_tools(command)
         }
@@ -127,6 +129,13 @@ fn is_shimmed_command_family(command: &str) -> bool {
             | "nl"
             | "wc"
             | "tree"
+            | "cargo"
+            | "pytest"
+            | "py.test"
+            | "python"
+            | "python3"
+            | "go"
+            | "deps"
     )
 }
 

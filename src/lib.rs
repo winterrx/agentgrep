@@ -1,6 +1,7 @@
 pub mod bench;
 pub mod cli;
 pub mod command;
+pub mod deps;
 pub mod doctor;
 pub mod exec;
 pub mod file_view;
@@ -14,6 +15,7 @@ pub mod run;
 pub mod search;
 pub mod shims;
 pub mod tee;
+pub mod test_runner;
 pub mod trace;
 
 use anyhow::Result;

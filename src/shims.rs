@@ -9,7 +9,8 @@ use crate::output::{ExecResult, OutputOptions};
 
 const SHIM_MARKER: &str = "# agentgrep shim v1";
 const SHIM_COMMANDS: &[&str] = &[
-    "rg", "grep", "find", "ls", "cat", "git", "head", "tail", "sed", "nl", "wc", "tree",
+    "rg", "grep", "find", "ls", "cat", "git", "head", "tail", "sed", "nl", "wc", "tree", "cargo",
+    "pytest", "py.test", "python", "python3", "go", "deps",
 ];
 
 pub fn execute_shims(args: ShimsArgs) -> Result<ExecResult> {
@@ -27,7 +28,7 @@ pub fn execute_shim_exec(args: ShimExecArgs) -> Result<ExecResult> {
     let display_command = shell_command(&args.program, &args.args);
     let command = match resolve_real_program(&args.program)? {
         Some(program) => shell_command(&program.display().to_string(), &args.args),
-        None if args.program == "tree" => display_command.clone(),
+        None if matches!(args.program.as_str(), "tree" | "deps") => display_command.clone(),
         None => bail!(
             "could not find real executable for shimmed command: {}",
             args.program

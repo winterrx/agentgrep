@@ -7,14 +7,17 @@ Source of truth for the public repo: this acceptance summary and the current imp
 - Rust CLI named `agentgrep`.
 - `agentgrep run "<command>"` proxy surface.
 - Detection for `rg <pattern>`, `grep -R <pattern> .`, `find . -type f`, supported `find -name`/`-iname`/`-maxdepth`/`-mindepth` forms, `ls -R`, `cat <file>`, and read-only `git status`, `git diff`, `git log`, `git show`, `git branch`, `git ls-files`.
-- Additional agent-habit intercepts: `head`, `tail`, numeric `sed -n`, `nl -ba ... | sed -n ...`, `wc -l`, `tree`, `git grep`, `git ls-tree`, and small read-only git inspect commands.
-- Direct commands: `regex`, `file`, `map`, `index`, `bench`, `trace`, `shims`, `doctor`.
-- Opt-in shims can proxy `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, and `tree` without requiring agents to change command habits.
+- Additional agent-habit intercepts: `head`, `tail`, numeric `sed -n`, `nl -ba ... | sed -n ...`, `wc -l`, `tree`, `git grep`, `git ls-tree`, `cargo test`, `pytest`, `python -m pytest`, `go test`, `deps`, and small read-only git inspect commands.
+- Direct commands: `regex`, `file`, `map`, `deps`, `index`, `bench`, `trace`, `shims`, `doctor`.
+- Opt-in shims can proxy `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, `tree`, `cargo`, `pytest`, `py.test`, `python`, `python3`, `go`, and `deps` without requiring agents to change command habits.
 - Shims preserve stdin and shell pipeline/redirection stream semantics by declining optimization when the parent shell command is composite.
 - Compact exact search output with file path, line number, matched line, nearby context, truncation notice, and raw fallback hint.
 - Large-file summaries by default for `file` and proxied `cat`; `--raw` emits exact bytes.
 - Repo maps hide ignored/generated/vendor/build/dependency/binary/lock files and honor supported filtered `find` predicates.
 - Read-only git commands are compacted conservatively while preserving exit code and stderr; mutating git commands pass through unchanged.
+- Plain/verbose `git log` uses a compact format that keeps commit hashes, subjects, relative dates, authors, and selected body lines. Explicit user log formats are passed through or compacted only after raw capture.
+- Test-runner commands compact large stdout only while preserving stderr byte-for-byte in V1.
+- `deps` summarizes dependency manifests for Rust, Node, Python, and Go projects.
 - Unsupported shimmed command families and mutating git passthrough bypass active agentgrep shim directories before invoking the real tool.
 - Small raw outputs pass through exactly by default; compaction only applies when raw output exceeds the budget or a direct compact command is used.
 - Truncated optimized proxy output can tee full raw output under `.agentgrep/tee`, with `AGENTGREP_TEE=0` as an escape hatch.
