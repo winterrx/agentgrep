@@ -403,6 +403,7 @@ fn discovery_suite_commands() -> Vec<String> {
         "rg --sort path stripe".to_string(),
         "grep -R stripe .".to_string(),
         "find . -type f".to_string(),
+        "find . -type f -name '*.ts'".to_string(),
         "ls -R".to_string(),
         "cat docs/stripe-notes.md".to_string(),
         "head -n 40 docs/stripe-notes.md".to_string(),
@@ -429,6 +430,7 @@ fn all_suite_commands() -> Result<Vec<String>> {
         ),
         format!("grep -R {} {}", shell_words::quote(&pattern), search_paths),
         "find . -type f".to_string(),
+        find_name_command(&sample_file),
         "ls -R".to_string(),
         format!("cat {sample}"),
         format!("head -n 40 {sample}"),
@@ -499,6 +501,20 @@ fn sample_pattern(sample_file: &Path) -> String {
         .find(|word| word.len() >= 3)
         .unwrap_or("the")
         .to_string()
+}
+
+fn find_name_command(sample_file: &Path) -> String {
+    let pattern = sample_file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| format!("*.{extension}"))
+        .unwrap_or_else(|| {
+            sample_file
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "*".to_string())
+        });
+    format!("find . -type f -name {}", shell_words::quote(&pattern))
 }
 
 fn search_paths_arg() -> String {

@@ -190,7 +190,8 @@ fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> 
                 )
             })?;
             format!(
-                "if [ -p /dev/stdin ] || {{ [ ! -t 0 ] && [ -s /dev/stdin ]; }}; then\n  exec {} \"$@\"\nfi\n",
+                "if [ -p /dev/stdin ] || {{ [ ! -t 0 ] && [ -s /dev/stdin ]; }}; then\n  exec {} \"$@\"\nfi\nparent_cmd=\nif command -v ps >/dev/null 2>&1; then\n  parent_cmd=$(ps -o command= -p \"$PPID\" 2>/dev/null || true)\nfi\ncase \"$parent_cmd\" in\n  *'|'*|*'>'*|*'<'*) exec {} \"$@\" ;;\nesac\n",
+                shell_single_quote(real_program),
                 shell_single_quote(real_program)
             )
         }

@@ -61,7 +61,13 @@ fn execute_run_inner(
         ParsedCommand::Search(search_command) => {
             execute_search_proxy(command, display_command, search_command, options)
         }
-        ParsedCommand::FindMap { path } | ParsedCommand::LsRecursive { path } => {
+        ParsedCommand::FindMap { query } => {
+            if !query.path.exists() {
+                return passthrough(command);
+            }
+            repo_map::execute_find_map(&query, options, Some(display_command.to_string()))
+        }
+        ParsedCommand::LsRecursive { path } => {
             if !path.exists() {
                 return passthrough(command);
             }
@@ -89,10 +95,39 @@ fn execute_run_inner(
         ParsedCommand::Git(GitCommand::ReadOnly { subcommand, .. }) => {
             git_compact::execute_git(command, subcommand, options)
         }
-        ParsedCommand::Git(GitCommand::Mutating { .. }) | ParsedCommand::Unsupported { .. } => {
-            passthrough(command)
+        ParsedCommand::Git(GitCommand::Mutating { .. }) => passthrough_real_tools(command),
+        ParsedCommand::Unsupported { .. } if is_shimmed_command_family(command) => {
+            passthrough_real_tools(command)
         }
+        ParsedCommand::Unsupported { .. } => passthrough(command),
     }
+}
+
+fn is_shimmed_command_family(command: &str) -> bool {
+    let Ok(words) = shell_words::split(command) else {
+        return false;
+    };
+    let Some(executable) = words.first() else {
+        return false;
+    };
+    let name = std::path::Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(executable);
+    matches!(
+        name,
+        "rg" | "grep"
+            | "find"
+            | "ls"
+            | "cat"
+            | "git"
+            | "head"
+            | "tail"
+            | "sed"
+            | "nl"
+            | "wc"
+            | "tree"
+    )
 }
 
 pub fn passthrough(command: &str) -> Result<ExecResult> {

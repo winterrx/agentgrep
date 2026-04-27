@@ -208,6 +208,8 @@ pub struct ShimExecArgs {
 pub enum TraceCommands {
     /// Import exec_command calls from Codex's local SQLite log.
     ImportCodex(TraceImportCodexArgs),
+    /// Import Bash tool calls from Claude JSONL project logs.
+    ImportClaude(TraceImportClaudeArgs),
     /// Summarize a JSONL command trace.
     Summary(TraceSummaryArgs),
     /// Replay safe read-only commands from a trace through the benchmark harness.
@@ -230,6 +232,24 @@ pub struct TraceImportCodexArgs {
     pub thread: Option<String>,
     /// Maximum SQLite rows to scan.
     #[arg(long, default_value_t = 500)]
+    pub rows: usize,
+    #[command(flatten)]
+    pub output: CommonOutputArgs,
+}
+
+#[derive(Debug, Args)]
+pub struct TraceImportClaudeArgs {
+    /// Claude projects log directory.
+    #[arg(long, default_value = "~/.claude/projects")]
+    pub dir: String,
+    /// JSONL trace output path.
+    #[arg(long, default_value = ".agentgrep/traces/claude.jsonl")]
+    pub out: PathBuf,
+    /// Only import Bash calls from this working directory subtree. Defaults to the current directory.
+    #[arg(long)]
+    pub cwd: Option<PathBuf>,
+    /// Maximum JSONL rows to scan across project logs.
+    #[arg(long, default_value_t = 50_000)]
     pub rows: usize,
     #[command(flatten)]
     pub output: CommonOutputArgs,

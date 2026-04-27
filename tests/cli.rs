@@ -197,6 +197,56 @@ fn repo_listing_commands_use_filtered_map_even_when_raw_is_small() {
 }
 
 #[test]
+fn find_name_filters_are_honored_by_compact_map() {
+    let cwd = fixture();
+    let output = run_agentgrep(
+        &cwd,
+        &[
+            "run",
+            "find . -type f -name '*.ts'",
+            "--limit",
+            "50",
+            "--budget",
+            "4000",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("agentgrep optimized:"), "{stdout}");
+    assert!(stdout.contains("Find filters: name=*.ts"), "{stdout}");
+    assert!(stdout.contains("src/billing/stripe.ts"), "{stdout}");
+    assert!(stdout.contains("tests/billing.test.ts"), "{stdout}");
+    assert!(!stdout.contains("docs/stripe-notes.md"), "{stdout}");
+    assert!(!stdout.contains("vendor/stripe-sdk.js"), "{stdout}");
+    assert!(
+        !stdout.contains("generated/schema.generated.ts"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn unsupported_find_predicates_pass_through() {
+    let cwd = fixture();
+    let output = run_agentgrep(
+        &cwd,
+        &[
+            "run",
+            "find . -path './vendor' -prune -o -type f -print",
+            "--limit",
+            "50",
+            "--budget",
+            "4000",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(!stdout.contains("agentgrep optimized:"), "{stdout}");
+    assert!(stdout.contains("./src/billing/stripe.ts"), "{stdout}");
+}
+
+#[test]
 fn shims_install_status_and_uninstall() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("shims");
@@ -388,6 +438,35 @@ fn listing_shims_use_filtered_map_by_default() {
             "{command}: {stdout}"
         );
     }
+}
+
+#[test]
+fn listing_shims_preserve_shell_pipeline_streams() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let cwd = tmp.path().join("repo");
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::create_dir_all(cwd.join("vendor")).unwrap();
+    fs::write(cwd.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(cwd.join("vendor/sdk.rs"), "vendor\n").unwrap();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("find . -type f -name '*.rs' | head -1")
+        .current_dir(&cwd)
+        .env("PATH", &path)
+        .output()
+        .expect("listing pipeline runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(!stdout.contains("agentgrep optimized:"), "{stdout}");
+    assert!(stdout.starts_with("./"), "{stdout}");
 }
 
 #[test]
@@ -618,6 +697,134 @@ fn trace_import_codex_reads_sqlite_exec_calls() {
     let trace_content = fs::read_to_string(trace).unwrap();
     assert!(trace_content.contains("\"command\":\"git status\""));
     assert!(trace_content.contains("\"observed_command\""));
+}
+
+#[test]
+fn trace_import_codex_reconstructs_streamed_arguments() {
+    if !has_command("sqlite3") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("logs.sqlite");
+    let trace = tmp.path().join("codex-stream.jsonl");
+    let args = serde_json::json!({
+        "cmd": "find . -type f -name '*.ts'",
+        "workdir": tmp.path(),
+    })
+    .to_string();
+    let split = args.len() / 2;
+    let (first, second) = args.split_at(split);
+    let event_1 = serde_json::json!({
+        "type": "response.function_call_arguments.delta",
+        "item_id": "fc_stream",
+        "output_index": 0,
+        "delta": first,
+    });
+    let event_2 = serde_json::json!({
+        "type": "response.function_call_arguments.delta",
+        "item_id": "fc_stream",
+        "output_index": 0,
+        "delta": second,
+    });
+    let done = serde_json::json!({
+        "type": "response.output_item.done",
+        "item": {
+            "id": "fc_stream",
+            "type": "function_call",
+            "status": "completed",
+            "arguments": "",
+            "call_id": "call_stream",
+            "name": "exec_command",
+        },
+        "output_index": 0,
+    });
+    let sql = format!(
+        "create table logs (id integer primary key autoincrement, ts integer not null, ts_nanos integer not null, level text not null, target text not null, feedback_log_body text, module_path text, file text, line integer, thread_id text, process_uuid text, estimated_bytes integer not null default 0); \
+         insert into logs (ts, ts_nanos, level, target, feedback_log_body, thread_id, estimated_bytes) values \
+         (1, 1, 'INFO', 'log', 'websocket event: {}', 'thread', 0), \
+         (1, 2, 'INFO', 'log', 'websocket event: {}', 'thread', 0), \
+         (1, 3, 'INFO', 'log', 'websocket event: {}', 'thread', 0);",
+        event_1.to_string().replace('\'', "''"),
+        event_2.to_string().replace('\'', "''"),
+        done.to_string().replace('\'', "''"),
+    );
+    let sqlite = Command::new("sqlite3")
+        .arg(&db)
+        .arg(sql)
+        .output()
+        .expect("sqlite3 creates streamed fixture db");
+    assert!(sqlite.status.success());
+
+    let output = run_agentgrep(
+        tmp.path(),
+        &[
+            "trace",
+            "import-codex",
+            "--db",
+            db.to_str().unwrap(),
+            "--out",
+            trace.to_str().unwrap(),
+            "--cwd",
+            tmp.path().to_str().unwrap(),
+            "--rows",
+            "20",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("Imported 1 records, 1 unique commands"));
+    let trace_content = fs::read_to_string(trace).unwrap();
+    assert!(trace_content.contains("\"command\":\"find . -type f -name '*.ts'\""));
+    assert!(trace_content.contains("\"family\":\"find\""));
+}
+
+#[test]
+fn trace_import_claude_reads_bash_tool_calls() {
+    let tmp = tempfile::tempdir().unwrap();
+    let projects = tmp.path().join("claude/projects/repo");
+    fs::create_dir_all(&projects).unwrap();
+    let log = projects.join("session.jsonl");
+    let trace = tmp.path().join("claude.jsonl");
+    let row = serde_json::json!({
+        "type": "assistant",
+        "cwd": tmp.path(),
+        "timestamp": "2026-04-27T12:00:00.000Z",
+        "sessionId": "session",
+        "message": {
+            "content": [{
+                "type": "tool_use",
+                "name": "Bash",
+                "input": {
+                    "command": "grep -rn stripe src",
+                    "description": "Search source",
+                }
+            }]
+        }
+    });
+    fs::write(&log, format!("{}\n", row)).unwrap();
+
+    let output = run_agentgrep(
+        tmp.path(),
+        &[
+            "trace",
+            "import-claude",
+            "--dir",
+            tmp.path().join("claude/projects").to_str().unwrap(),
+            "--out",
+            trace.to_str().unwrap(),
+            "--cwd",
+            tmp.path().to_str().unwrap(),
+            "--rows",
+            "20",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("Imported 1 records, 1 unique commands"));
+    let trace_content = fs::read_to_string(trace).unwrap();
+    assert!(trace_content.contains("\"source\":\"claude-jsonl\""));
+    assert!(trace_content.contains("\"command\":\"grep -rn stripe src\""));
+    assert!(trace_content.contains("\"family\":\"grep\""));
 }
 
 #[test]

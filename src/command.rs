@@ -5,7 +5,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedCommand {
     Search(SearchCommand),
-    FindMap { path: PathBuf },
+    FindMap { query: FindCommand },
     LsRecursive { path: PathBuf },
     TreeMap { path: PathBuf },
     Cat { path: PathBuf },
@@ -28,6 +28,20 @@ pub struct SearchCommand {
     pub pattern: String,
     pub paths: Vec<PathBuf>,
     pub prefer_raw_matches: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindCommand {
+    pub path: PathBuf,
+    pub name_patterns: Vec<FindNamePattern>,
+    pub min_depth: Option<usize>,
+    pub max_depth: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindNamePattern {
+    pub pattern: String,
+    pub case_insensitive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,28 +451,128 @@ fn grep_inline_option_value(word: &str) -> bool {
 }
 
 fn parse_find(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
-    if words.len() < 4 {
+    if words.len() < 2 {
         return Ok(ParsedCommand::Unsupported {
             reason: "find command is not find <path> -type f".to_string(),
         });
     }
-    let path = PathBuf::from(&words[1]);
+    let mut path = None;
     let mut type_f = false;
-    let mut i = 2;
-    while i + 1 < words.len() {
-        if words[i] == "-type" && words[i + 1] == "f" {
-            type_f = true;
-            break;
+    let mut name_patterns = Vec::new();
+    let mut min_depth = None;
+    let mut max_depth = None;
+    let mut i = 1;
+
+    while i < words.len() {
+        let word = &words[i];
+        match word.as_str() {
+            "--" => {
+                i += 1;
+            }
+            "-type" => {
+                let Some(value) = words.get(i + 1) else {
+                    return Ok(ParsedCommand::Unsupported {
+                        reason: "find -type has no value".to_string(),
+                    });
+                };
+                if value == "f" {
+                    type_f = true;
+                    i += 2;
+                } else {
+                    return Ok(ParsedCommand::Unsupported {
+                        reason: "find command does not request files with -type f".to_string(),
+                    });
+                }
+            }
+            "-name" | "-iname" => {
+                let Some(value) = words.get(i + 1) else {
+                    return Ok(ParsedCommand::Unsupported {
+                        reason: format!("{word} has no pattern"),
+                    });
+                };
+                if !is_safe_find_name_pattern(value) {
+                    return Ok(ParsedCommand::Unsupported {
+                        reason: format!("{word} pattern is not supported by the compact map"),
+                    });
+                }
+                name_patterns.push(FindNamePattern {
+                    pattern: value.clone(),
+                    case_insensitive: word == "-iname",
+                });
+                i += 2;
+            }
+            "-maxdepth" => {
+                let Some(depth) = words
+                    .get(i + 1)
+                    .and_then(|value| parse_zero_based_count(value))
+                else {
+                    return Ok(ParsedCommand::Unsupported {
+                        reason: "find -maxdepth has no numeric value".to_string(),
+                    });
+                };
+                max_depth = Some(depth);
+                i += 2;
+            }
+            "-mindepth" => {
+                let Some(depth) = words
+                    .get(i + 1)
+                    .and_then(|value| parse_zero_based_count(value))
+                else {
+                    return Ok(ParsedCommand::Unsupported {
+                        reason: "find -mindepth has no numeric value".to_string(),
+                    });
+                };
+                min_depth = Some(depth);
+                i += 2;
+            }
+            "-print" => {
+                i += 1;
+            }
+            "-path" | "-ipath" | "-regex" | "-iregex" | "-prune" | "-exec" | "-execdir"
+            | "-delete" | "-o" | "-or" | "-a" | "-and" | "!" | "-not" | "(" | ")" => {
+                return Ok(ParsedCommand::Unsupported {
+                    reason: format!("find predicate {word} is passed through for exact semantics"),
+                });
+            }
+            _ if word.starts_with('-') => {
+                return Ok(ParsedCommand::Unsupported {
+                    reason: format!("find predicate {word} is passed through for exact semantics"),
+                });
+            }
+            _ => {
+                if path.is_some() {
+                    return Ok(ParsedCommand::Unsupported {
+                        reason: "find command has multiple search roots".to_string(),
+                    });
+                }
+                path = Some(PathBuf::from(word));
+                i += 1;
+            }
         }
-        i += 1;
     }
+
     if type_f {
-        Ok(ParsedCommand::FindMap { path })
+        Ok(ParsedCommand::FindMap {
+            query: FindCommand {
+                path: path.unwrap_or_else(|| PathBuf::from(".")),
+                name_patterns,
+                min_depth,
+                max_depth,
+            },
+        })
     } else {
         Ok(ParsedCommand::Unsupported {
             reason: "find command does not request files with -type f".to_string(),
         })
     }
+}
+
+fn is_safe_find_name_pattern(pattern: &str) -> bool {
+    !pattern.is_empty()
+        && !pattern.contains('/')
+        && !pattern.contains('\\')
+        && !pattern.contains('[')
+        && !pattern.contains(']')
 }
 
 fn parse_ls(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
@@ -682,6 +796,10 @@ fn parse_count(value: &str) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
+fn parse_zero_based_count(value: &str) -> Option<usize> {
+    value.parse::<usize>().ok()
+}
+
 fn parse_git(words: &[String]) -> ParsedCommand {
     let mut i = 1;
     while i < words.len() && words[i].starts_with('-') {
@@ -853,9 +971,32 @@ mod tests {
         assert_eq!(
             parse_command("find . -type f").unwrap(),
             ParsedCommand::FindMap {
-                path: PathBuf::from(".")
+                query: FindCommand {
+                    path: PathBuf::from("."),
+                    name_patterns: Vec::new(),
+                    min_depth: None,
+                    max_depth: None,
+                }
             }
         );
+        assert_eq!(
+            parse_command("find src -maxdepth 2 -type f -name '*.rs'").unwrap(),
+            ParsedCommand::FindMap {
+                query: FindCommand {
+                    path: PathBuf::from("src"),
+                    name_patterns: vec![FindNamePattern {
+                        pattern: "*.rs".to_string(),
+                        case_insensitive: false,
+                    }],
+                    min_depth: None,
+                    max_depth: Some(2),
+                }
+            }
+        );
+        assert!(matches!(
+            parse_command("find . -path './target' -prune -o -type f -print").unwrap(),
+            ParsedCommand::Unsupported { .. }
+        ));
         assert_eq!(
             parse_command("ls -laR src").unwrap(),
             ParsedCommand::LsRecursive {

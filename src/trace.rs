@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -13,7 +13,8 @@ use serde_json::Value;
 
 use crate::bench;
 use crate::cli::{
-    TraceArgs, TraceCommands, TraceImportCodexArgs, TraceReplayArgs, TraceSummaryArgs,
+    TraceArgs, TraceCommands, TraceImportClaudeArgs, TraceImportCodexArgs, TraceReplayArgs,
+    TraceSummaryArgs,
 };
 use crate::command::{FileSliceKind, GitCommand, ParsedCommand, SearchKind, parse_command};
 use crate::output::{
@@ -54,6 +55,16 @@ struct TraceImportSummary {
     unique_commands: usize,
     cwd_filter: Option<String>,
     thread_filter: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TraceImportClaudeSummary {
+    dir: String,
+    out: String,
+    scanned_rows: usize,
+    imported_records: usize,
+    unique_commands: usize,
+    cwd_filter: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,9 +121,30 @@ struct CodexExecCall {
     workdir: Option<String>,
 }
 
+#[derive(Debug)]
+struct ClaudeBashCall {
+    ts: i64,
+    command: String,
+    workdir: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct PendingCodexArgs {
+    ts: i64,
+    thread_id: Option<String>,
+    arguments: String,
+}
+
+#[derive(Debug)]
+enum CodexStreamEvent {
+    ArgumentsDelta { key: String, delta: String },
+    OutputItemDone { key: String, item: Value },
+}
+
 pub fn execute_trace(args: TraceArgs) -> Result<ExecResult> {
     match args.command {
         TraceCommands::ImportCodex(args) => execute_import_codex(args),
+        TraceCommands::ImportClaude(args) => execute_import_claude(args),
         TraceCommands::Summary(args) => execute_summary(args),
         TraceCommands::Replay(args) => execute_replay(args),
     }
@@ -250,6 +282,72 @@ fn execute_import_codex(args: TraceImportCodexArgs) -> Result<ExecResult> {
     out.push_str(&format!(
         "Imported {} records, {} unique commands from {}.\n",
         summary.imported_records, summary.unique_commands, summary.db
+    ));
+    out.push_str("Trace stores command metadata only; stdout/stderr content is not captured.\n");
+    Ok(ExecResult::from_parts(out.into_bytes(), Vec::new(), 0))
+}
+
+fn execute_import_claude(args: TraceImportClaudeArgs) -> Result<ExecResult> {
+    let options: OutputOptions = (&args.output).into();
+    let options = options.normalized();
+    let dir = expand_home(&args.dir);
+    let cwd_filter = args
+        .cwd
+        .unwrap_or(env::current_dir().context("failed to read current directory")?);
+    let (calls, scanned_rows) = import_claude_calls(&dir, cwd_filter.as_path(), args.rows)?;
+
+    let mut records = Vec::new();
+    let mut unique = HashSet::new();
+    for call in &calls {
+        unique.insert(call.command.clone());
+        records.push(TraceRecord {
+            version: TRACE_VERSION,
+            source: "claude-jsonl".to_string(),
+            ts: call.ts,
+            cwd: call.workdir.clone(),
+            command: call.command.clone(),
+            observed_command: None,
+            family: command_family(&call.command),
+            exit_code: None,
+            stdout_bytes: None,
+            stderr_bytes: None,
+            estimated_tokens: None,
+            elapsed_ms: None,
+        });
+    }
+
+    write_records(&args.out, &records)?;
+    let summary = TraceImportClaudeSummary {
+        dir: dir.display().to_string(),
+        out: args.out.display().to_string(),
+        scanned_rows,
+        imported_records: records.len(),
+        unique_commands: unique.len(),
+        cwd_filter: Some(cwd_filter.display().to_string()),
+    };
+
+    if options.json {
+        return json_result(
+            "agentgrep trace import-claude",
+            true,
+            0,
+            &[],
+            false,
+            &summary,
+        );
+    }
+
+    let mut out = String::new();
+    let mut truncated = false;
+    push_budgeted_line(
+        &mut out,
+        &format!("agentgrep trace import-claude: {}", summary.out),
+        options.budget,
+        &mut truncated,
+    );
+    out.push_str(&format!(
+        "Imported {} records, {} unique commands from {}.\n",
+        summary.imported_records, summary.unique_commands, summary.dir
     ));
     out.push_str("Trace stores command metadata only; stdout/stderr content is not captured.\n");
     Ok(ExecResult::from_parts(out.into_bytes(), Vec::new(), 0))
@@ -445,36 +543,188 @@ fn import_codex_calls(
         );
     }
 
-    let rows: Vec<SqliteLogRow> =
+    let mut rows: Vec<SqliteLogRow> =
         serde_json::from_slice(&output.stdout).context("failed to parse sqlite3 JSON output")?;
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
+    let mut pending_args = HashMap::<String, PendingCodexArgs>::new();
+    rows.reverse();
     for row in rows {
         let Some(body) = row.feedback_log_body else {
             continue;
         };
-        for mut call in parse_codex_exec_bodies(row.ts, row.thread_id.clone(), &body) {
-            let Some(workdir) = &call.workdir else {
-                continue;
-            };
-            if !path_starts_with(Path::new(workdir), cwd_filter) {
-                continue;
+        if let Some(event) = parse_codex_stream_event(row.ts, row.thread_id.clone(), &body) {
+            match event {
+                CodexStreamEvent::ArgumentsDelta { key, delta } => {
+                    let pending = pending_args.entry(key).or_insert_with(|| PendingCodexArgs {
+                        ts: row.ts,
+                        thread_id: row.thread_id.clone(),
+                        arguments: String::new(),
+                    });
+                    pending.ts = row.ts;
+                    pending.arguments.push_str(&delta);
+                }
+                CodexStreamEvent::OutputItemDone { key, item } => {
+                    if item.get("name").and_then(Value::as_str) == Some("exec_command")
+                        && item
+                            .get("arguments")
+                            .and_then(Value::as_str)
+                            .is_none_or(str::is_empty)
+                        && let Some(pending) = pending_args.remove(&key)
+                        && let Some(call) = codex_call_from_args_text(
+                            row.ts,
+                            row.thread_id.clone().or(pending.thread_id),
+                            item.get("call_id")
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string),
+                            &pending.arguments,
+                        )
+                    {
+                        push_codex_call_if_in_scope(
+                            &mut calls,
+                            &mut seen,
+                            call,
+                            cwd_filter,
+                            thread_filter,
+                        );
+                    }
+                }
             }
-            let key = call
-                .call_id
-                .clone()
-                .unwrap_or_else(|| format!("{}:{}", call.ts, call.command));
-            if !seen.insert(key) {
-                continue;
-            }
-            if let Some(thread) = thread_filter {
-                call.thread_id = Some(thread.to_string());
-            }
-            calls.push(call);
+        }
+        for call in parse_codex_exec_bodies(row.ts, row.thread_id.clone(), &body) {
+            push_codex_call_if_in_scope(&mut calls, &mut seen, call, cwd_filter, thread_filter);
         }
     }
-    calls.reverse();
     Ok(calls)
+}
+
+fn push_codex_call_if_in_scope(
+    calls: &mut Vec<CodexExecCall>,
+    seen: &mut HashSet<String>,
+    mut call: CodexExecCall,
+    cwd_filter: &Path,
+    thread_filter: Option<&str>,
+) {
+    let Some(workdir) = &call.workdir else {
+        return;
+    };
+    if !path_starts_with(Path::new(workdir), cwd_filter) {
+        return;
+    }
+    let key = call
+        .call_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", call.ts, call.command));
+    if !seen.insert(key) {
+        return;
+    }
+    if let Some(thread) = thread_filter {
+        call.thread_id = Some(thread.to_string());
+    }
+    calls.push(call);
+}
+
+fn import_claude_calls(
+    dir: &Path,
+    cwd_filter: &Path,
+    rows: usize,
+) -> Result<(Vec<ClaudeBashCall>, usize)> {
+    if !dir.exists() {
+        bail!("Claude projects directory not found: {}", dir.display());
+    }
+    let mut files = collect_jsonl_files(dir)?;
+    files.sort_by(|left, right| {
+        modified_seconds(right)
+            .cmp(&modified_seconds(left))
+            .then_with(|| left.cmp(right))
+    });
+
+    let mut calls = Vec::new();
+    let mut scanned = 0usize;
+    for file in files {
+        let content = fs::read_to_string(&file)
+            .with_context(|| format!("failed to read Claude log {}", file.display()))?;
+        for line in content.lines() {
+            if scanned >= rows {
+                return Ok((calls, scanned));
+            }
+            scanned += 1;
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let Some(workdir) = value
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+            else {
+                continue;
+            };
+            if !path_starts_with(Path::new(&workdir), cwd_filter) {
+                continue;
+            }
+            let ts = now_epoch_seconds();
+            collect_claude_bash_calls(&value, ts, Some(&workdir), &mut calls);
+        }
+    }
+    Ok((calls, scanned))
+}
+
+fn collect_jsonl_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(collect_jsonl_files(&path)?);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+fn modified_seconds(path: &Path) -> u64 {
+    path.metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn collect_claude_bash_calls(
+    value: &Value,
+    ts: i64,
+    workdir: Option<&str>,
+    calls: &mut Vec<ClaudeBashCall>,
+) {
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("tool_use")
+                && map.get("name").and_then(Value::as_str) == Some("Bash")
+                && let Some(command) = map
+                    .get("input")
+                    .and_then(|input| input.get("command"))
+                    .and_then(Value::as_str)
+            {
+                calls.push(ClaudeBashCall {
+                    ts,
+                    command: command.to_string(),
+                    workdir: workdir.map(ToString::to_string),
+                });
+                return;
+            }
+            for nested in map.values() {
+                collect_claude_bash_calls(nested, ts, workdir, calls);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_claude_bash_calls(item, ts, workdir, calls);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn parse_codex_exec_bodies(ts: i64, thread_id: Option<String>, body: &str) -> Vec<CodexExecCall> {
@@ -519,14 +769,23 @@ fn parse_codex_exec_item(
     if args_text.is_empty() {
         return None;
     }
+    let call_id = item
+        .get("call_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    codex_call_from_args_text(ts, thread_id, call_id, args_text)
+}
+
+fn codex_call_from_args_text(
+    ts: i64,
+    thread_id: Option<String>,
+    call_id: Option<String>,
+    args_text: &str,
+) -> Option<CodexExecCall> {
     let args: Value = serde_json::from_str(args_text).ok()?;
     let command = args.get("cmd")?.as_str()?.to_string();
     let workdir = args
         .get("workdir")
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    let call_id = item
-        .get("call_id")
         .and_then(Value::as_str)
         .map(ToString::to_string);
     Some(CodexExecCall {
@@ -536,6 +795,47 @@ fn parse_codex_exec_item(
         command,
         workdir,
     })
+}
+
+fn parse_codex_stream_event(
+    _ts: i64,
+    thread_id: Option<String>,
+    body: &str,
+) -> Option<CodexStreamEvent> {
+    let payload = codex_json_payload(body)?;
+    let value = serde_json::from_str::<Value>(payload).ok()?;
+    match value.get("type").and_then(Value::as_str)? {
+        "response.function_call_arguments.delta" => Some(CodexStreamEvent::ArgumentsDelta {
+            key: codex_stream_key(thread_id.as_deref(), &value, None)?,
+            delta: value.get("delta")?.as_str()?.to_string(),
+        }),
+        "response.output_item.done" => {
+            let item = value.get("item")?.clone();
+            Some(CodexStreamEvent::OutputItemDone {
+                key: codex_stream_key(thread_id.as_deref(), &value, Some(&item))?,
+                item,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn codex_stream_key(
+    thread_id: Option<&str>,
+    event: &Value,
+    item: Option<&Value>,
+) -> Option<String> {
+    if let Some(id) = event
+        .get("item_id")
+        .or_else(|| item.and_then(|item| item.get("id")))
+        .and_then(Value::as_str)
+    {
+        return Some(format!("{}:{id}", thread_id.unwrap_or_default()));
+    }
+    event
+        .get("output_index")
+        .and_then(Value::as_i64)
+        .map(|index| format!("{}:output:{index}", thread_id.unwrap_or_default()))
 }
 
 fn parse_codex_tool_call_body(
