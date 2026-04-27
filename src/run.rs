@@ -63,31 +63,31 @@ fn execute_run_inner(
         }
         ParsedCommand::FindMap { query } => {
             if !query.path.exists() {
-                return passthrough(command);
+                return passthrough_real_tools(command);
             }
             repo_map::execute_find_map(&query, options, Some(display_command.to_string()))
         }
         ParsedCommand::LsRecursive { path } => {
             if !path.exists() {
-                return passthrough(command);
+                return passthrough_real_tools(command);
             }
             repo_map::execute_map(&path, options, Some(display_command.to_string()))
         }
         ParsedCommand::TreeMap { path } => {
             if !path.exists() {
-                return passthrough(command);
+                return passthrough_real_tools(command);
             }
             repo_map::execute_map(&path, options, Some(display_command.to_string()))
         }
         ParsedCommand::Cat { path } => {
             if !path.exists() {
-                return passthrough(command);
+                return passthrough_real_tools(command);
             }
             file_view::execute_file(&path, None, options)
         }
         ParsedCommand::FileSlice(slice) => {
             if !slice.path.exists() {
-                return passthrough(command);
+                return passthrough_real_tools(command);
             }
             line_read::execute_file_slice(command, slice, options)
         }

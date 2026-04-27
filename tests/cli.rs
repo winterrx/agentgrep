@@ -470,6 +470,30 @@ fn listing_shims_preserve_shell_pipeline_streams() {
 }
 
 #[test]
+fn missing_file_reads_bypass_active_shims_for_exact_errors() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = run_agentgrep_with_env(
+        tmp.path(),
+        &["run", "head -50 missing-file.txt"],
+        &[("PATH", &path)],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success());
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(!stderr.is_empty());
+    assert!(!stderr.contains("agentgrep"));
+}
+
+#[test]
 fn run_raw_bypasses_active_shims() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("shims");

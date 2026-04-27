@@ -313,6 +313,9 @@ pub(crate) fn run_benchmark(
 }
 
 fn execute_indexed_mode(command: &str, options: OutputOptions) -> Result<ExecResult> {
+    if has_shell_control_syntax(command) {
+        return run::passthrough_real_tools(command);
+    }
     match parse_command(command)? {
         ParsedCommand::Search(search_command) => search::execute_regex(
             &search_command.pattern,
@@ -328,6 +331,18 @@ fn execute_indexed_mode(command: &str, options: OutputOptions) -> Result<ExecRes
         ),
         _ => run::execute_run(command, options),
     }
+}
+
+fn has_shell_control_syntax(command: &str) -> bool {
+    command.contains("$(")
+        || command.contains('`')
+        || command.contains("&&")
+        || command.contains("||")
+        || command.contains(';')
+        || command.contains('|')
+        || command.contains('>')
+        || command.contains('<')
+        || command.contains('\n')
 }
 
 fn build_gates(
@@ -404,6 +419,8 @@ fn discovery_suite_commands() -> Vec<String> {
         "grep -R stripe .".to_string(),
         "find . -type f".to_string(),
         "find . -type f -name '*.ts'".to_string(),
+        "find . -type f -name '*.ts' | head -20".to_string(),
+        "grep -R stripe . | head -20".to_string(),
         "ls -R".to_string(),
         "cat docs/stripe-notes.md".to_string(),
         "head -n 40 docs/stripe-notes.md".to_string(),
@@ -431,6 +448,12 @@ fn all_suite_commands() -> Result<Vec<String>> {
         format!("grep -R {} {}", shell_words::quote(&pattern), search_paths),
         "find . -type f".to_string(),
         find_name_command(&sample_file),
+        find_name_pipeline_command(&sample_file),
+        format!(
+            "grep -R {} {} | head -20",
+            shell_words::quote(&pattern),
+            search_paths
+        ),
         "ls -R".to_string(),
         format!("cat {sample}"),
         format!("head -n 40 {sample}"),
@@ -515,6 +538,10 @@ fn find_name_command(sample_file: &Path) -> String {
                 .unwrap_or_else(|| "*".to_string())
         });
     format!("find . -type f -name {}", shell_words::quote(&pattern))
+}
+
+fn find_name_pipeline_command(sample_file: &Path) -> String {
+    format!("{} | head -20", find_name_command(sample_file))
 }
 
 fn search_paths_arg() -> String {
@@ -681,6 +708,19 @@ mod tests {
                 "missing {expected:?} in {commands:?}"
             );
         }
+        assert!(
+            commands
+                .iter()
+                .any(|command| command.starts_with("find . -type f -name ")
+                    && command.contains("| head -20")),
+            "missing find pipeline in {commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|command| command.starts_with("grep -R ") && command.contains("| head -20")),
+            "missing grep pipeline in {commands:?}"
+        );
         if is_git_repo() {
             for expected in [
                 "git status",
@@ -697,5 +737,24 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn indexed_mode_keeps_shell_pipelines_raw() {
+        let result = execute_indexed_mode(
+            "printf 'alpha\nbeta\n' | head -1",
+            OutputOptions {
+                raw: false,
+                json: false,
+                exact: false,
+                limit: 8,
+                budget: 4000,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.stdout, b"alpha\n");
+        assert!(result.stderr.is_empty());
+        assert_eq!(result.exit_code, 0);
     }
 }
