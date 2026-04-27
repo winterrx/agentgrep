@@ -29,4 +29,4 @@ Source of truth for the public repo: this acceptance summary and the current imp
 
 - The index is lightweight JSON metadata plus trigram summaries. It is enough to support indexing workflow and future candidate filtering, but it is not yet a full persistent search engine.
 - Proxy search executes the raw command first to preserve stderr and exit-code behavior, then renders compact output. This prioritizes safety over maximum speed in the first version.
-- PATH shims, MCP tools, shell hook installers, tree-sitter symbols, and semantic search are later phases from the PRD.
+- MCP tools, richer shell hook installers, tree-sitter symbols, and semantic search are later phases from the PRD.
