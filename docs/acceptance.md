@@ -19,7 +19,7 @@ Source of truth for the public repo: this acceptance summary and the current imp
 - `AGENTGREP_DISABLE=1` bypasses optimization for `agentgrep run`.
 - Output controls: `--raw`, `--json`, `--exact`, `--limit`, `--budget`.
 - Bench command: `agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed`.
-- Benchmark suite: `agentgrep bench --suite discovery --compare raw,proxy,indexed`.
+- Benchmark suites: `agentgrep bench --suite discovery --compare raw,proxy,indexed` and workspace-local all-family coverage with `agentgrep bench --suite all --compare raw,proxy,indexed`.
 - Benchmark metrics: time, bytes, estimated tokens, token savings, speedup, exit-code parity, stderr parity, and `--raw` exactness.
 - Trace recording: `agentgrep run "<command>" --trace <path>` and `AGENTGREP_TRACE=<path>`.
 - Trace dogfooding: `agentgrep trace import-codex`, `agentgrep trace summary`, and `agentgrep trace replay`.

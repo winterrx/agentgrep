@@ -12,6 +12,7 @@ Safety policy:
 - Complex search commands with filtering, sorting, context, or alternate pattern flags compact parsed raw output instead of approximating the command semantics.
 - Compacted output must preserve exit code, stderr, file paths, line numbers, exact matched lines, errors, and truncation notices.
 - Truncated proxy output should include a raw rerun hint and, when the raw output is large enough, a `.agentgrep/tee` full-output file.
+- `--raw` and `AGENTGREP_DISABLE=1` bypass active agentgrep shim directories before running the underlying command.
 - `AGENTGREP_DISABLE=1` disables proxy optimization for `agentgrep run`.
 - `AGENTGREP_TEE=0` disables full-output tee files.
 - Shims read output defaults from `AGENTGREP_LIMIT`, `AGENTGREP_BUDGET`, `AGENTGREP_RAW`, `AGENTGREP_JSON`, and `AGENTGREP_EXACT`.

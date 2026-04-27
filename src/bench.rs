@@ -1,5 +1,7 @@
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -8,6 +10,7 @@ use serde::Serialize;
 use crate::cli::BenchArgs;
 use crate::command::{ParsedCommand, parse_command};
 use crate::exec::{command_exists, run_shell_capture_real_tools};
+use crate::filters::collect_source_files;
 use crate::output::{ExecResult, OutputOptions, estimate_tokens_from_bytes, json_result};
 use crate::{run, search};
 
@@ -135,8 +138,8 @@ fn execute_bench_suite(
     options: OutputOptions,
     fail_gates: bool,
 ) -> Result<ExecResult> {
-    let commands = suite_commands(suite)?;
     let summaries = with_cwd(&repo, || {
+        let commands = suite_commands(suite)?;
         let mut summaries = Vec::new();
         for command in &commands {
             summaries.push(run_benchmark(command, &repo, modes, options)?);
@@ -218,10 +221,25 @@ pub(crate) fn run_benchmark(
         ))
     })?;
 
-    // The raw benchmark mode and `agentgrep run --raw` both use the same shell
-    // passthrough path. Treat that as the exactness check instead of executing
-    // nondeterministic tools like ripgrep twice and comparing unstable file order.
-    let raw_exactness = true;
+    let raw_probe = timed(|| {
+        crate::tee::with_tee_disabled(|| {
+            crate::trace::with_trace_disabled(|| {
+                run::execute_run(
+                    command,
+                    OutputOptions {
+                        raw: true,
+                        json: false,
+                        exact: options.exact,
+                        limit: options.limit,
+                        budget: options.budget,
+                    },
+                )
+            })
+        })
+    })?;
+    let raw_exactness = raw_probe.result.stdout == raw.result.stdout
+        && raw_probe.result.stderr == raw.result.stderr
+        && raw_probe.result.exit_code == raw.result.exit_code;
 
     let raw_tokens = estimate_tokens_from_bytes(raw.result.stdout.len());
     let raw_ms = raw.elapsed_ms.max(0.01);
@@ -339,8 +357,8 @@ fn build_gates(
         });
         gates.push(BenchGate {
             name: "truncation visibility".to_string(),
-            passed: proxy.output_bytes > 0,
-            message: "optimized output is non-empty and includes explicit metadata".to_string(),
+            passed: raw_tokens == 0 || proxy.output_bytes > 0,
+            message: "optimized output is non-empty when raw output is non-empty".to_string(),
         });
         if raw_tokens >= 1000 && raw_tokens > budget {
             gates.push(BenchGate {
@@ -373,11 +391,16 @@ pub(crate) fn parse_modes(compare: &str) -> Result<Vec<String>> {
 }
 
 fn suite_commands(suite: &str) -> Result<Vec<String>> {
-    if suite != "discovery" {
-        bail!("unknown benchmark suite: {suite}");
+    match suite {
+        "discovery" => Ok(discovery_suite_commands()),
+        "all" | "intercepts" => all_suite_commands(),
+        _ => bail!("unknown benchmark suite: {suite}"),
     }
+}
+
+fn discovery_suite_commands() -> Vec<String> {
     let mut commands = vec![
-        "rg stripe".to_string(),
+        "rg --sort path stripe".to_string(),
         "grep -R stripe .".to_string(),
         "find . -type f".to_string(),
         "ls -R".to_string(),
@@ -390,7 +413,122 @@ fn suite_commands(suite: &str) -> Result<Vec<String>> {
     if command_exists("tree").is_some() {
         commands.push("tree -L 2 .".to_string());
     }
+    commands
+}
+
+fn all_suite_commands() -> Result<Vec<String>> {
+    let sample_file = sample_file().unwrap_or_else(|| PathBuf::from("Cargo.toml"));
+    let sample = shell_words::quote(&sample_file.display().to_string()).into_owned();
+    let pattern = sample_pattern(&sample_file);
+    let search_paths = search_paths_arg();
+    let mut commands = vec![
+        format!(
+            "rg --sort path {} {}",
+            shell_words::quote(&pattern),
+            search_paths
+        ),
+        format!("grep -R {} {}", shell_words::quote(&pattern), search_paths),
+        "find . -type f".to_string(),
+        "ls -R".to_string(),
+        format!("cat {sample}"),
+        format!("head -n 40 {sample}"),
+        format!("tail -n 40 {sample}"),
+        format!("sed -n '1,40p' {sample}"),
+        format!("nl -ba {sample} | sed -n '1,40p'"),
+        format!("wc -l {sample}"),
+    ];
+    if command_exists("tree").is_some() {
+        commands.push("tree -L 2 .".to_string());
+    }
+    if is_git_repo() {
+        let git_paths = git_search_paths_arg();
+        commands.extend([
+            "git status".to_string(),
+            "git diff".to_string(),
+            "git log --oneline -n 20".to_string(),
+            "git show --stat --oneline --name-only HEAD".to_string(),
+            "git branch".to_string(),
+            "git ls-files".to_string(),
+            "git ls-tree -r --name-only HEAD".to_string(),
+            "git rev-parse --show-toplevel".to_string(),
+            "git remote -v".to_string(),
+            "git config --list".to_string(),
+            "git merge-base HEAD HEAD".to_string(),
+            "git describe --always".to_string(),
+            format!("git blame -L 1,20 {sample}"),
+        ]);
+        if !git_paths.is_empty() {
+            commands.push(format!(
+                "git grep {} -- {}",
+                shell_words::quote(&pattern),
+                git_paths
+            ));
+        }
+    }
     Ok(commands)
+}
+
+fn sample_file() -> Option<PathBuf> {
+    let preferred = [
+        "README.md",
+        "src/main.rs",
+        "src/lib.rs",
+        "Cargo.toml",
+        "docs/safety.md",
+    ];
+    preferred
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+        .or_else(|| {
+            collect_source_files(&[PathBuf::from(".")])
+                .into_iter()
+                .next()
+        })
+}
+
+fn sample_pattern(sample_file: &Path) -> String {
+    let content = fs::read_to_string(sample_file).unwrap_or_default();
+    for candidate in ["agentgrep", "Agentgrep", "fn", "use", "pub"] {
+        if content.contains(candidate) {
+            return candidate.to_string();
+        }
+    }
+    content
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .find(|word| word.len() >= 3)
+        .unwrap_or("the")
+        .to_string()
+}
+
+fn search_paths_arg() -> String {
+    let preferred = ["src", "tests", "docs", "README.md", "Cargo.toml"];
+    let paths = preferred
+        .iter()
+        .filter(|path| Path::new(path).exists())
+        .map(|path| shell_words::quote(path).into_owned())
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        ".".to_string()
+    } else {
+        paths.join(" ")
+    }
+}
+
+fn git_search_paths_arg() -> String {
+    let preferred = ["README.md", "src", "tests", "docs", "Cargo.toml"];
+    preferred
+        .iter()
+        .filter(|path| Path::new(path).exists())
+        .map(|path| shell_words::quote(path).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn is_git_repo() -> bool {
+    run_shell_capture_real_tools("git rev-parse --is-inside-work-tree", None)
+        .map(|captured| captured.exit_code == 0)
+        .unwrap_or(false)
 }
 
 fn truncate_for_table(value: &str, width: usize) -> String {
@@ -417,6 +555,11 @@ pub(crate) fn with_cwd<T, F>(path: &Path, f: F) -> Result<T>
 where
     F: FnOnce() -> Result<T>,
 {
+    static CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = CWD_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let old = env::current_dir().context("failed to read current directory")?;
     env::set_current_dir(path)
         .with_context(|| format!("failed to enter benchmark repo {}", path.display()))?;
@@ -499,5 +642,44 @@ mod tests {
                 .iter()
                 .any(|gate| gate.name == "large-output token savings" && gate.passed)
         );
+    }
+
+    #[test]
+    fn all_suite_covers_intercepted_command_families() {
+        let commands = suite_commands("all").unwrap();
+
+        for expected in [
+            "rg ",
+            "grep -R ",
+            "find . -type f",
+            "ls -R",
+            "cat ",
+            "head -n 40 ",
+            "tail -n 40 ",
+            "sed -n '1,40p' ",
+            "nl -ba ",
+            "wc -l ",
+        ] {
+            assert!(
+                commands.iter().any(|command| command.starts_with(expected)),
+                "missing {expected:?} in {commands:?}"
+            );
+        }
+        if is_git_repo() {
+            for expected in [
+                "git status",
+                "git diff",
+                "git log",
+                "git show",
+                "git branch",
+                "git ls-files",
+                "git ls-tree",
+            ] {
+                assert!(
+                    commands.iter().any(|command| command.starts_with(expected)),
+                    "missing {expected:?} in {commands:?}"
+                );
+            }
+        }
     }
 }

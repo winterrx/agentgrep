@@ -58,6 +58,7 @@ Safety defaults:
 - Repo listing commands like `find . -type f`, `ls -R`, and `tree` use the filtered in-process map by default; use `--raw` for original listings.
 - Complex `rg`/`grep` forms with filters, sort options, context flags, or `-e` patterns compact the actual raw result stream instead of re-running an approximate search.
 - Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `.agentgrep/tee`.
+- `--raw` and `AGENTGREP_DISABLE=1` bypass active agentgrep shim directories before running the underlying command.
 - Set `AGENTGREP_DISABLE=1` to bypass proxy optimization for `agentgrep run`.
 - Set `AGENTGREP_TEE=0` to disable full-output tee files.
 - Shims also read `AGENTGREP_LIMIT`, `AGENTGREP_BUDGET`, `AGENTGREP_RAW`, `AGENTGREP_JSON`, and `AGENTGREP_EXACT` for default output behavior.
@@ -73,6 +74,7 @@ agentgrep map .
 agentgrep index .
 agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed
 agentgrep bench --suite discovery --compare raw,proxy,indexed
+agentgrep bench --suite all --compare raw,proxy,indexed
 agentgrep doctor
 ```
 
@@ -111,11 +113,12 @@ The benchmark command compares raw, proxy, and indexed modes:
 ```bash
 agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed
 agentgrep bench --suite discovery --compare raw,proxy,indexed
+agentgrep bench --suite all --compare raw,proxy,indexed
 agentgrep trace replay .agentgrep/traces/codex.jsonl --repo .
 ```
 
 It reports raw/proxy/indexed time, output bytes, estimated tokens, token savings, speedup ratio, exit-code parity, stderr parity, and `--raw` exactness. Gates are reported for raw exactness, exit-code parity, stderr parity, truncation visibility, and 60% token savings when raw output is large enough to matter.
 
-The built-in `discovery` suite replays a small mix of realistic agent reads: broad search, recursive listing, file reads, line slices, and line counts.
+The built-in `discovery` suite replays a small fixture mix of realistic agent reads: broad search, recursive listing, file reads, line slices, and line counts. The `all` suite builds a workspace-local benchmark set that covers every intercepted command family, including read-only git commands when the current repo supports them.
 
 Trace replay is the dogfood loop for local workspaces: import the Codex session trace, summarize the command families agents are leaning on, then benchmark the top safe commands against raw/proxy/indexed behavior.

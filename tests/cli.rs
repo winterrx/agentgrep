@@ -391,6 +391,34 @@ fn listing_shims_use_filtered_map_by_default() {
 }
 
 #[test]
+fn run_raw_bypasses_active_shims() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let cwd = tmp.path().join("repo");
+    fs::create_dir_all(cwd.join("src")).unwrap();
+    fs::create_dir_all(cwd.join("vendor")).unwrap();
+    fs::write(cwd.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(cwd.join("vendor/sdk.js"), "vendor\n").unwrap();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = run_agentgrep_with_env(
+        &cwd,
+        &["run", "find . -type f", "--raw"],
+        &[("PATH", &path)],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(!stdout.contains("agentgrep optimized:"), "{stdout}");
+    assert!(stdout.contains("./src/main.rs"), "{stdout}");
+    assert!(stdout.contains("./vendor/sdk.js"), "{stdout}");
+}
+
+#[test]
 fn large_file_is_summarized_and_raw_is_exact() {
     let tmp = tempfile::tempdir().unwrap();
     let file = tmp.path().join("large.rs");
@@ -603,7 +631,7 @@ fn benchmark_reports_required_metrics() {
         &[
             "bench",
             "--command",
-            "rg stripe",
+            "rg --sort path stripe",
             "--compare",
             "raw,proxy,indexed",
         ],
@@ -611,7 +639,7 @@ fn benchmark_reports_required_metrics() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success());
-    assert!(stdout.contains("agentgrep bench: rg stripe"));
+    assert!(stdout.contains("agentgrep bench: rg --sort path stripe"));
     assert!(stdout.contains("tokens"));
     assert!(stdout.contains("savings"));
     assert!(stdout.contains("speedup"));
@@ -640,7 +668,7 @@ fn benchmark_suite_reports_multiple_discovery_commands() {
 
     assert!(output.status.success());
     assert!(stdout.contains("agentgrep bench suite: discovery"));
-    assert!(stdout.contains("rg stripe"));
+    assert!(stdout.contains("rg --sort path stripe"));
     assert!(stdout.contains("head -n 40 docs/stripe-notes.md"));
     assert!(stdout.contains("wc -l docs/stripe-notes.md"));
     assert!(stdout.contains("gates:"));

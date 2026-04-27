@@ -50,7 +50,7 @@ fn execute_run_inner(
 ) -> Result<ExecResult> {
     let options = options.normalized();
     if options.raw || std::env::var("AGENTGREP_DISABLE").ok().as_deref() == Some("1") {
-        return passthrough(command);
+        return passthrough_real_tools(command);
     }
 
     let parsed = match parse_command(command) {
@@ -97,6 +97,15 @@ fn execute_run_inner(
 
 pub fn passthrough(command: &str) -> Result<ExecResult> {
     let captured = run_shell_capture(command, None)?;
+    Ok(ExecResult::from_parts(
+        captured.stdout,
+        captured.stderr,
+        captured.exit_code,
+    ))
+}
+
+pub fn passthrough_real_tools(command: &str) -> Result<ExecResult> {
+    let captured = run_shell_capture_real_tools(command, None)?;
     Ok(ExecResult::from_parts(
         captured.stdout,
         captured.stderr,
