@@ -29,6 +29,7 @@ pub struct SearchSummary {
     pub shown_matches: usize,
     pub files_with_matches: usize,
     pub omitted_matches: usize,
+    pub raw_output_bytes: usize,
     pub truncated: bool,
     pub matches: Vec<SearchMatch>,
     pub errors: Vec<String>,
@@ -112,6 +113,7 @@ pub fn search_paths(
     let mut matches = Vec::new();
     let mut errors = Vec::new();
     let mut total_matches = 0;
+    let mut raw_output_bytes = 0;
     let mut files_with_matches = BTreeSet::new();
 
     for path in &files {
@@ -130,6 +132,7 @@ pub fn search_paths(
             if matcher.is_match(line) {
                 total_matches += 1;
                 files_with_matches.insert(path.display().to_string());
+                raw_output_bytes += raw_match_line_len(path, idx + 1, line);
                 if matches.len() < limit {
                     matches.push(SearchMatch {
                         path: path.display().to_string(),
@@ -155,6 +158,7 @@ pub fn search_paths(
         shown_matches,
         files_with_matches: files_with_matches.len(),
         omitted_matches: total_matches.saturating_sub(shown_matches),
+        raw_output_bytes,
         truncated: shown_matches < total_matches,
         matches,
         errors,
@@ -202,11 +206,13 @@ pub fn summary_from_raw_match_lines(
     let stdout = String::from_utf8_lossy(raw_stdout);
     let mut matches = Vec::new();
     let mut total_matches = 0;
+    let mut raw_output_bytes = 0;
     for line in stdout.lines() {
         let Some(parsed) = parse_path_line_match(line) else {
             continue;
         };
         total_matches += 1;
+        raw_output_bytes += line.len() + 1;
         if matches.len() < limit {
             matches.push(parsed);
         }
@@ -221,6 +227,7 @@ pub fn summary_from_raw_match_lines(
         roots,
         0,
         total_matches,
+        raw_output_bytes,
         matches,
     ))
 }
@@ -273,6 +280,7 @@ pub fn summary_from_matches(
     roots: &[PathBuf],
     files_searched: usize,
     total_matches: usize,
+    raw_output_bytes: usize,
     matches: Vec<SearchMatch>,
 ) -> SearchSummary {
     let mut by_file = BTreeMap::<String, usize>::new();
@@ -287,10 +295,15 @@ pub fn summary_from_matches(
         shown_matches: matches.len(),
         files_with_matches: by_file.len(),
         omitted_matches: total_matches.saturating_sub(matches.len()),
+        raw_output_bytes,
         truncated: matches.len() < total_matches,
         matches,
         errors: Vec::new(),
     }
+}
+
+fn raw_match_line_len(path: &Path, line_number: usize, line: &str) -> usize {
+    path.display().to_string().len() + 1 + line_number.to_string().len() + 1 + line.len() + 1
 }
 
 pub fn render_search_result(

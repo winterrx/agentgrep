@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::command::{GitCommand, ParsedCommand, parse_command};
+use crate::command::{GitCommand, ParsedCommand, SearchKind, parse_command};
 use crate::exec::{
     run_shell_capture, run_shell_capture_optimized_real_tools, run_shell_capture_real_tools,
 };
@@ -193,6 +193,11 @@ fn execute_search_proxy(
     search_command: crate::command::SearchCommand,
     options: OutputOptions,
 ) -> Result<ExecResult> {
+    if let Some(result) = try_execute_plain_rg_fast_path(display_command, &search_command, options)?
+    {
+        return Ok(result);
+    }
+
     let raw = run_shell_capture_optimized_real_tools(command, None)?;
     let raw_tokens = raw.output_tokens();
     if !raw.stdout_truncated && raw_fits_budget(options, &raw.stdout, &raw.stderr) {
@@ -218,6 +223,7 @@ fn execute_search_proxy(
                         &search_command.paths,
                         0,
                         1,
+                        raw.stdout_bytes,
                         Vec::new(),
                     )
                 } else {
@@ -245,6 +251,7 @@ fn execute_search_proxy(
                     &search_command.paths,
                     0,
                     total,
+                    raw.stdout_bytes,
                     parsed,
                 )
             }
@@ -266,4 +273,34 @@ fn execute_search_proxy(
         raw.capture_hint(recovery_hint.as_deref()).as_deref(),
     )
     .map(|result| result.with_baseline_output_tokens(raw_tokens))
+}
+
+fn try_execute_plain_rg_fast_path(
+    display_command: &str,
+    search_command: &crate::command::SearchCommand,
+    options: OutputOptions,
+) -> Result<Option<ExecResult>> {
+    if search_command.kind != SearchKind::Rg || search_command.prefer_raw_matches {
+        return Ok(None);
+    }
+    if search_command.paths.iter().any(|path| !path.exists()) {
+        return Ok(None);
+    }
+
+    let summary = match search::search_paths(
+        &search_command.pattern,
+        &search_command.paths,
+        options.exact,
+        options.limit,
+    ) {
+        Ok(summary) => summary,
+        Err(_) => return Ok(None),
+    };
+    let raw_tokens = crate::output::estimate_tokens_from_bytes(summary.raw_output_bytes);
+    if raw_tokens <= options.budget {
+        return Ok(None);
+    }
+    let exit_code = if summary.total_matches == 0 { 1 } else { 0 };
+    search::render_search_result(&summary, options, display_command, exit_code, &[], None)
+        .map(|result| Some(result.with_baseline_output_tokens(raw_tokens)))
 }

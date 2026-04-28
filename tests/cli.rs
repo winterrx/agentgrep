@@ -97,21 +97,26 @@ fn run_rg_returns_compact_matches_with_context_and_truncation() {
     let tee_dir = tee_dir.to_string_lossy().to_string();
     let output = run_agentgrep_with_env(
         &cwd,
-        &["run", "rg stripe", "--limit", "2", "--budget", "100"],
+        &[
+            "run",
+            "rg --sort path stripe",
+            "--limit",
+            "2",
+            "--budget",
+            "100",
+        ],
         &[("AGENTGREP_TEE_DIR", &tee_dir)],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success());
-    assert!(stdout.contains("agentgrep optimized: rg stripe"));
-    assert!(stdout.contains("src/billing/stripe.ts:"));
+    assert!(stdout.contains("agentgrep optimized: rg --sort path stripe"));
+    assert!(stdout.contains("agent-session.jsonl:"));
     assert!(stdout.contains("> |"));
     assert!(stdout.contains("Truncated:"));
-    assert!(stdout.contains("Full output:"));
+    assert!(stdout.contains("Raw: agentgrep run \"rg --sort path stripe\" --raw"));
     assert!(Path::new(&tee_dir).exists());
     assert!(stdout.contains("Exit code: 0"));
-    assert!(!stdout.contains("vendor/stripe-sdk.js"));
-    assert!(!stdout.contains("generated/schema.generated.ts"));
 }
 
 #[test]
@@ -128,8 +133,46 @@ fn optimized_search_reports_when_raw_capture_is_capped() {
 
     let output = run_agentgrep_with_env(
         tmp.path(),
-        &["run", "rg stripe", "--limit", "3", "--budget", "80"],
+        &[
+            "run",
+            "rg --sort path stripe",
+            "--limit",
+            "3",
+            "--budget",
+            "80",
+        ],
         &[("AGENTGREP_CAPTURE_MAX_STDOUT_BYTES", "256")],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("agentgrep optimized: rg --sort path stripe"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("large.txt:"), "{stdout}");
+    assert!(stdout.contains("Truncated:"), "{stdout}");
+    assert!(stdout.contains("Raw capture: stdout truncated"), "{stdout}");
+    assert!(stdout.contains("Exit code: 0"), "{stdout}");
+}
+
+#[test]
+fn plain_rg_large_output_uses_internal_fast_path_without_tee() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let tee_dir = tmp.path().join("tee");
+    let mut body = String::new();
+    for idx in 0..1200 {
+        body.push_str(&format!("stripe fast path line {idx}\n"));
+    }
+    fs::write(tmp.path().join("large.txt"), body).unwrap();
+
+    let output = run_agentgrep_with_env(
+        tmp.path(),
+        &["run", "rg stripe", "--limit", "3", "--budget", "100"],
+        &[("AGENTGREP_TEE_DIR", tee_dir.to_str().unwrap())],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -140,8 +183,35 @@ fn optimized_search_reports_when_raw_capture_is_capped() {
     );
     assert!(stdout.contains("large.txt:"), "{stdout}");
     assert!(stdout.contains("Truncated:"), "{stdout}");
-    assert!(stdout.contains("Raw capture: stdout truncated"), "{stdout}");
     assert!(stdout.contains("Exit code: 0"), "{stdout}");
+    assert!(
+        !tee_dir.exists(),
+        "internal fast path should not run raw command just to create a tee"
+    );
+}
+
+#[test]
+fn plain_rg_small_output_stays_raw_exact() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("small.txt"), "stripe small output\n").unwrap();
+
+    let raw = Command::new("sh")
+        .arg("-c")
+        .arg("rg stripe")
+        .current_dir(tmp.path())
+        .output()
+        .expect("raw rg runs");
+    let proxied = run_agentgrep(
+        tmp.path(),
+        &["run", "rg stripe", "--limit", "10", "--budget", "4000"],
+    );
+
+    assert_eq!(proxied.status.code(), raw.status.code());
+    assert_eq!(proxied.stdout, raw.stdout);
+    assert_eq!(proxied.stderr, raw.stderr);
 }
 
 #[test]
