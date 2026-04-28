@@ -71,6 +71,7 @@ Safety defaults:
 - `cargo test`, `cargo check`, `cargo clippy`, `pytest`, `python -m pytest`, `go test`, Node package-manager test scripts, `vitest`, `jest`, `playwright`, `ruff`, and `mypy` are recognized as runner/diagnostic commands. V1 only compacts large stdout while preserving stderr byte-for-byte, so compile errors and runner diagnostics are not silently hidden.
 - `deps` summarizes dependency manifests (`Cargo.toml`, `package.json`, `requirements.txt`, `pyproject.toml`, and `go.mod`) without pretending to be an exact manifest read.
 - Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `.agentgrep/tee`.
+- Optimized raw probes stream stdout/stderr instead of using one giant `Command::output()` buffer. Stdout capture is capped by `AGENTGREP_CAPTURE_MAX_STDOUT_BYTES` (default 4 MiB, `0` disables) for optimized renderers; `--raw` remains byte-for-byte exact and ignores this cap.
 - `--raw`, `AGENTGREP_DISABLE=1`, unsupported shimmed commands, and mutating `git` passthrough all bypass active agentgrep shim directories before running the underlying command.
 - Set `AGENTGREP_DISABLE=1` to bypass proxy optimization for `agentgrep run`.
 - Set `AGENTGREP_TEE=0` to disable full-output tee files.
@@ -124,7 +125,7 @@ Agentgrep preserves exit codes, stderr, errors, file paths, line numbers, exact 
 
 The proxy follows RTK's conservative shape:
 
-- A conservative runner captures raw stdout, stderr, and exit status before deciding whether compaction is safe; tee recovery caps and rotates full-output files.
+- A conservative streaming runner drains raw stdout, stderr, and exit status before deciding whether compaction is safe; optimized stdout capture is bounded and any cap is disclosed, while `--raw` stays exact.
 - Parser tiers recognize high-confidence command families first, decline unsafe shell forms, and fall back to the real tool for unsupported commands.
 - Small raw output remains exact; large output is compacted only when the family has a conservative renderer.
 - Tee recovery can persist full raw stdout under `.agentgrep/tee` for truncated optimized output, while preserving stderr byte-for-byte.

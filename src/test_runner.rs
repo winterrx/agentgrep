@@ -32,27 +32,26 @@ pub fn execute_test(
     if options.raw {
         return crate::run::passthrough_real_tools(command);
     }
-    let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
-    if raw_fits_budget(options, &captured.stdout, &captured.stderr) {
-        let tokens = crate::output::estimate_tokens_from_bytes(
-            captured.stdout.len() + captured.stderr.len(),
-        );
+    let captured = crate::exec::run_shell_capture_optimized_real_tools(command, None)?;
+    if !captured.stdout_truncated && raw_fits_budget(options, &captured.stdout, &captured.stderr) {
+        let tokens = captured.output_tokens();
         return Ok(
             ExecResult::from_parts(captured.stdout, captured.stderr, captured.exit_code)
                 .with_baseline_output_tokens(tokens),
         );
     }
-    let raw_tokens =
-        crate::output::estimate_tokens_from_bytes(captured.stdout.len() + captured.stderr.len());
+    let raw_tokens = captured.output_tokens();
 
     let stdout = String::from_utf8_lossy(&captured.stdout);
     let summary = summarize_test_output(runner, &stdout, options.limit);
+    let capture_hint = captured.capture_hint(None);
     render_test(
         command,
         &summary,
         options,
         captured.exit_code,
         &captured.stderr,
+        capture_hint.as_deref(),
     )
     .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }
@@ -108,6 +107,7 @@ fn render_test(
     options: OutputOptions,
     exit_code: i32,
     stderr: &[u8],
+    capture_hint: Option<&str>,
 ) -> Result<ExecResult> {
     if options.json {
         return json_result(command, true, exit_code, stderr, summary.truncated, summary);
@@ -148,6 +148,10 @@ fn render_test(
             "Truncated: omitted {} stdout line(s). Stderr is preserved byte-for-byte. Use --raw for exact stdout.\n",
             summary.omitted_lines.max(1)
         ));
+    }
+    if let Some(hint) = capture_hint {
+        out.push_str(hint);
+        out.push('\n');
     }
     out.push_str(&status_footer(
         exit_code,
@@ -203,8 +207,15 @@ mod tests {
     fn renders_degraded_marker() {
         let output = "running 1 test\nfailures:\n---- tests::x stdout ----\nthread 'tests::x' panicked at src/lib.rs:1:1:\nboom\nextra\nextra\n";
         let summary = summarize_test_output(TestCommand::CargoTest, output, 2);
-        let rendered = render_test("cargo test", &summary, OutputOptions::default(), 101, b"")
-            .expect("render succeeds");
+        let rendered = render_test(
+            "cargo test",
+            &summary,
+            OutputOptions::default(),
+            101,
+            b"",
+            None,
+        )
+        .expect("render succeeds");
         let stdout = String::from_utf8(rendered.stdout).expect("utf8");
         assert!(stdout.contains("DEGRADED"));
         assert!(stdout.contains("structured parse exceeded output limit"));
@@ -220,6 +231,7 @@ mod tests {
             OutputOptions::default(),
             1,
             b"stderr detail",
+            None,
         )
         .expect("render succeeds");
         let stdout = String::from_utf8(rendered.stdout).expect("utf8");

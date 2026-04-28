@@ -43,18 +43,15 @@ pub fn execute_git(
         return execute_log_compact(command, &compact_command, options);
     }
 
-    let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
-    if raw_fits_budget(options, &captured.stdout, &captured.stderr) {
-        let tokens = crate::output::estimate_tokens_from_bytes(
-            captured.stdout.len() + captured.stderr.len(),
-        );
+    let captured = crate::exec::run_shell_capture_optimized_real_tools(command, None)?;
+    if !captured.stdout_truncated && raw_fits_budget(options, &captured.stdout, &captured.stderr) {
+        let tokens = captured.output_tokens();
         return Ok(
             ExecResult::from_parts(captured.stdout, captured.stderr, captured.exit_code)
                 .with_baseline_output_tokens(tokens),
         );
     }
-    let raw_tokens =
-        crate::output::estimate_tokens_from_bytes(captured.stdout.len() + captured.stderr.len());
+    let raw_tokens = captured.output_tokens();
     let summary = summarize_git_output(subcommand, &captured, options.limit);
     let recovery_hint = crate::tee::tee_raw_output(
         command,
@@ -62,13 +59,14 @@ pub fn execute_git(
         &captured.stderr,
         summary.truncated || captured.exit_code != 0,
     );
+    let capture_hint = captured.capture_hint(recovery_hint.as_deref());
     render_git(
         command,
         &summary,
         options,
         captured.exit_code,
         &captured.stderr,
-        recovery_hint.as_deref(),
+        capture_hint.as_deref(),
     )
     .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }
@@ -509,11 +507,18 @@ mod tests {
 
     #[test]
     fn compact_patch_preserves_file_and_hunk_headers() {
+        let stdout =
+            b"diff --git a/a b/a\nindex 1..2\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n context\n"
+                .to_vec();
         let captured = CapturedCommand {
-            stdout: b"diff --git a/a b/a\nindex 1..2\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n context\n".to_vec(),
+            stdout_bytes: stdout.len(),
+            stdout,
             stderr: Vec::new(),
             exit_code: 0,
             duration: Duration::from_millis(1),
+            stderr_bytes: 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
         };
         let summary = summarize_git_output(GitReadOnly::Diff, &captured, 20);
         assert!(

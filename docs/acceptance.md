@@ -18,6 +18,7 @@ Source of truth for the public repo: this acceptance summary and the current imp
 - Read-only git commands are compacted conservatively while preserving exit code and stderr; mutating git commands pass through unchanged.
 - Plain/verbose `git log` uses a compact format that keeps commit hashes, subjects, relative dates, authors, and selected body lines. Explicit user log formats are passed through or compacted only after raw capture.
 - Test-runner commands compact large stdout only while preserving stderr byte-for-byte in V1.
+- Optimized raw probes use streaming capture and cap stored stdout by `AGENTGREP_CAPTURE_MAX_STDOUT_BYTES` by default; cap notices are explicit and `--raw` remains byte-for-byte exact.
 - `deps` summarizes dependency manifests for Rust, Node, Python, and Go projects.
 - Unsupported shimmed command families and mutating git passthrough bypass active agentgrep shim directories before invoking the real tool.
 - Small raw outputs pass through exactly by default; compaction only applies when raw output exceeds the budget or a direct compact command is used.
@@ -27,7 +28,7 @@ Source of truth for the public repo: this acceptance summary and the current imp
 - Bench command: `agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed`.
 - Benchmark suites: `agentgrep bench --suite discovery --compare raw,proxy,indexed` and workspace-local all-family coverage with `agentgrep bench --suite all --compare raw,proxy,indexed`.
 - Benchmark metrics: time, bytes, estimated tokens, token savings, speedup, exit-code parity, stderr parity, and `--raw` exactness.
-- RTK-derived runtime shape: raw capture before compaction, parser tiers that decline unsafe or unsupported forms, exact small-output fallback, capped and rotated tee recovery for truncated stdout, persistent command tracking through metadata-only gain records, and incremental benchmark coverage for expanded runner families.
+- RTK-derived runtime shape: streaming raw capture before compaction, parser tiers that decline unsafe or unsupported forms, exact small-output fallback, explicit optimized-capture cap notices, capped and rotated tee recovery for truncated stdout, persistent command tracking through metadata-only gain records, and incremental benchmark coverage for expanded runner families.
 - Trace recording: `agentgrep run "<command>" --trace <path>` and `AGENTGREP_TRACE=<path>`.
 - Trace dogfooding: `agentgrep trace import-codex`, `agentgrep trace import-claude`, `agentgrep trace summary`, and `agentgrep trace replay`.
 - Codex trace import reconstructs streamed function-call argument deltas and stores command metadata only.

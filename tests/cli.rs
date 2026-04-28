@@ -115,6 +115,65 @@ fn run_rg_returns_compact_matches_with_context_and_truncation() {
 }
 
 #[test]
+fn optimized_search_reports_when_raw_capture_is_capped() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut body = String::new();
+    for idx in 0..2000 {
+        body.push_str(&format!("stripe capture cap line {idx}\n"));
+    }
+    fs::write(tmp.path().join("large.txt"), body).unwrap();
+
+    let output = run_agentgrep_with_env(
+        tmp.path(),
+        &["run", "rg stripe", "--limit", "3", "--budget", "80"],
+        &[("AGENTGREP_CAPTURE_MAX_STDOUT_BYTES", "256")],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("agentgrep optimized: rg stripe"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("large.txt:"), "{stdout}");
+    assert!(stdout.contains("Truncated:"), "{stdout}");
+    assert!(stdout.contains("Raw capture: stdout truncated"), "{stdout}");
+    assert!(stdout.contains("Exit code: 0"), "{stdout}");
+}
+
+#[test]
+fn raw_mode_ignores_optimized_capture_cap_and_stays_exact() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let mut body = String::new();
+    for idx in 0..500 {
+        body.push_str(&format!("stripe raw exact line {idx}\n"));
+    }
+    fs::write(tmp.path().join("large.txt"), body).unwrap();
+
+    let raw = Command::new("sh")
+        .arg("-c")
+        .arg("rg stripe")
+        .current_dir(tmp.path())
+        .output()
+        .expect("raw rg runs");
+    let proxied = run_agentgrep_with_env(
+        tmp.path(),
+        &["run", "rg stripe", "--raw"],
+        &[("AGENTGREP_CAPTURE_MAX_STDOUT_BYTES", "64")],
+    );
+
+    assert_eq!(proxied.status.code(), raw.status.code());
+    assert_eq!(proxied.stdout, raw.stdout);
+    assert_eq!(proxied.stderr, raw.stderr);
+}
+
+#[test]
 fn complex_rg_flags_compact_the_raw_result_set() {
     if !has_command("rg") {
         return;

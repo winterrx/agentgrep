@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::command::{GitCommand, ParsedCommand, parse_command};
-use crate::exec::{run_shell_capture, run_shell_capture_real_tools};
+use crate::exec::{
+    run_shell_capture, run_shell_capture_optimized_real_tools, run_shell_capture_real_tools,
+};
 use crate::file_view;
 use crate::git_compact;
 use crate::line_read;
@@ -191,9 +193,9 @@ fn execute_search_proxy(
     search_command: crate::command::SearchCommand,
     options: OutputOptions,
 ) -> Result<ExecResult> {
-    let raw = run_shell_capture_real_tools(command, None)?;
-    let raw_tokens = crate::output::estimate_tokens_from_bytes(raw.stdout.len() + raw.stderr.len());
-    if raw_fits_budget(options, &raw.stdout, &raw.stderr) {
+    let raw = run_shell_capture_optimized_real_tools(command, None)?;
+    let raw_tokens = raw.output_tokens();
+    if !raw.stdout_truncated && raw_fits_budget(options, &raw.stdout, &raw.stderr) {
         return Ok(
             ExecResult::from_parts(raw.stdout, raw.stderr, raw.exit_code)
                 .with_baseline_output_tokens(raw_tokens),
@@ -210,11 +212,21 @@ fn execute_search_proxy(
         ) {
             Some(summary) => summary,
             None => {
-                return Ok(ExecResult::from_parts(
-                    raw.stdout,
-                    raw.stderr,
-                    raw.exit_code,
-                ));
+                if raw.stdout_truncated {
+                    summary_from_matches(
+                        &search_command.pattern,
+                        &search_command.paths,
+                        0,
+                        1,
+                        Vec::new(),
+                    )
+                } else {
+                    return Ok(ExecResult::from_parts(
+                        raw.stdout,
+                        raw.stderr,
+                        raw.exit_code,
+                    ));
+                }
             }
         }
     } else {
@@ -251,7 +263,7 @@ fn execute_search_proxy(
         display_command,
         raw.exit_code,
         &raw.stderr,
-        recovery_hint.as_deref(),
+        raw.capture_hint(recovery_hint.as_deref()).as_deref(),
     )
     .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }
