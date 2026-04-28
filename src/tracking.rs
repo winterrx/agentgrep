@@ -118,7 +118,6 @@ struct GroupAccumulator {
     input_tokens: u64,
     output_tokens: u64,
     saved_tokens: i64,
-    savings_pct_total: f64,
     elapsed_ms: u64,
 }
 
@@ -128,18 +127,18 @@ impl GroupAccumulator {
         self.input_tokens += record.input_tokens;
         self.output_tokens += record.output_tokens;
         self.saved_tokens += record.saved_tokens;
-        self.savings_pct_total += record.savings_pct;
         self.elapsed_ms += record.elapsed_ms;
     }
 
     fn into_summary(self, key: String) -> TrackingGroupSummary {
+        let avg_savings_pct = savings_pct(self.saved_tokens, self.input_tokens);
         TrackingGroupSummary {
             key,
             records: self.records,
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             saved_tokens: self.saved_tokens,
-            avg_savings_pct: average(self.savings_pct_total, self.records),
+            avg_savings_pct,
             elapsed_ms: self.elapsed_ms,
         }
     }
@@ -432,7 +431,7 @@ pub fn summarize_tracking_records(records: &[TrackingRecord]) -> TrackingSummary
         total_input_tokens: total.input_tokens,
         total_output_tokens: total.output_tokens,
         total_saved_tokens: total.saved_tokens,
-        avg_savings_pct: average(total.savings_pct_total, total.records),
+        avg_savings_pct: savings_pct(total.saved_tokens, total.input_tokens),
         by_command: sorted_groups(by_command),
         by_project: sorted_groups(by_project),
     }
@@ -562,11 +561,11 @@ fn sorted_groups(groups: BTreeMap<String, GroupAccumulator>) -> Vec<TrackingGrou
     summaries
 }
 
-fn average(total: f64, count: usize) -> f64 {
-    if count == 0 {
+fn savings_pct(saved_tokens: i64, input_tokens: u64) -> f64 {
+    if input_tokens == 0 {
         0.0
     } else {
-        total / count as f64
+        (saved_tokens as f64 / input_tokens as f64) * 100.0
     }
 }
 
@@ -754,8 +753,13 @@ mod tests {
         assert_eq!(summary.total_input_tokens, 220);
         assert_eq!(summary.total_output_tokens, 65);
         assert_eq!(summary.total_saved_tokens, 155);
+        assert_eq!(summary.avg_savings_pct, (155.0 / 220.0) * 100.0);
         assert_eq!(summary.by_command[0].key, "rg");
         assert_eq!(summary.by_command[0].records, 2);
+        assert_eq!(
+            summary.by_command[0].avg_savings_pct,
+            (125.0 / 180.0) * 100.0
+        );
         assert_eq!(summary.by_project[0].key, "alpha");
         assert_eq!(summary.by_project[0].saved_tokens, 125);
     }
