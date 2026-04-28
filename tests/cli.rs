@@ -1036,6 +1036,28 @@ fn benchmark_suite_reports_multiple_discovery_commands() {
 }
 
 #[test]
+fn gain_tracking_uses_sqlite_by_default_path_shape() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("tracking.sqlite");
+    let db_arg = db.to_string_lossy().to_string();
+    let output = run_agentgrep_with_env(
+        tmp.path(),
+        &["run", "printf hello"],
+        &[("AGENTGREP_TRACKING_PATH", &db_arg)],
+    );
+    assert!(output.status.success());
+    assert!(db.is_file());
+
+    let gain = run_agentgrep(tmp.path(), &["gain", "--path", &db_arg]);
+    let stdout = String::from_utf8_lossy(&gain.stdout);
+
+    assert!(gain.status.success(), "{stdout}");
+    assert!(stdout.contains("ledger:"), "{stdout}");
+    assert!(stdout.contains("records: 1"), "{stdout}");
+    assert!(stdout.contains("printf hello"), "{stdout}");
+}
+
+#[test]
 fn file_slice_commands_are_compacted_with_line_numbers() {
     let cwd = fixture();
     for command in [

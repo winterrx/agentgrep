@@ -308,8 +308,8 @@ pub struct DoctorArgs {
 
 #[derive(Debug, Args)]
 pub struct GainArgs {
-    /// Tracking JSONL ledger path.
-    #[arg(long, default_value = ".agentgrep/tracking.jsonl")]
+    /// Tracking SQLite database path. Legacy .jsonl ledgers are still readable.
+    #[arg(long, default_value = ".agentgrep/tracking.sqlite")]
     pub path: PathBuf,
     #[command(flatten)]
     pub output: CommonOutputArgs,

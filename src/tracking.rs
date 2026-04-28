@@ -11,11 +11,13 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 
 pub const TRACKING_ENV: &str = "AGENTGREP_TRACKING";
 pub const TRACKING_PATH_ENV: &str = "AGENTGREP_TRACKING_PATH";
-pub const DEFAULT_TRACKING_PATH: &str = ".agentgrep/tracking.jsonl";
+pub const DEFAULT_TRACKING_PATH: &str = ".agentgrep/tracking.sqlite";
+pub const LEGACY_TRACKING_PATH: &str = ".agentgrep/tracking.jsonl";
 static TRACKING_DISABLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +178,51 @@ impl Drop for TrackingDisableGuard {
 }
 
 pub fn append_record_to_path(path: &Path, record: &TrackingRecord) -> Result<()> {
+    if is_jsonl_path(path) {
+        return append_jsonl_record_to_path(path, record);
+    }
+    append_sqlite_record_to_path(path, record)
+}
+
+fn append_sqlite_record_to_path(path: &Path, record: &TrackingRecord) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create tracking dir {}", parent.display()))?;
+    }
+    let _guard = LedgerLock::acquire(path)?;
+    let connection = open_tracking_db(path)?;
+    connection.execute(
+        "INSERT INTO tracking_records (
+            command,
+            optimized_command_label,
+            cwd,
+            project,
+            input_tokens,
+            output_tokens,
+            saved_tokens,
+            savings_pct,
+            elapsed_ms,
+            timestamp
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            &record.command,
+            &record.optimized_command_label,
+            &record.cwd,
+            &record.project,
+            record.input_tokens as i64,
+            record.output_tokens as i64,
+            record.saved_tokens,
+            record.savings_pct,
+            record.elapsed_ms as i64,
+            record.timestamp,
+        ],
+    )?;
+    Ok(())
+}
+
+fn append_jsonl_record_to_path(path: &Path, record: &TrackingRecord) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -194,6 +241,16 @@ pub fn append_record_to_path(path: &Path, record: &TrackingRecord) -> Result<()>
 }
 
 pub fn load_tracking_records(path: &Path) -> Result<Vec<TrackingRecord>> {
+    if !path.exists() && !is_jsonl_path(path) && Path::new(LEGACY_TRACKING_PATH).exists() {
+        return load_jsonl_tracking_records(Path::new(LEGACY_TRACKING_PATH));
+    }
+    if is_jsonl_path(path) {
+        return load_jsonl_tracking_records(path);
+    }
+    load_sqlite_tracking_records(path)
+}
+
+fn load_jsonl_tracking_records(path: &Path) -> Result<Vec<TrackingRecord>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -205,6 +262,89 @@ pub fn load_tracking_records(path: &Path) -> Result<Vec<TrackingRecord>> {
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
     Ok(records)
+}
+
+fn load_sqlite_tracking_records(path: &Path) -> Result<Vec<TrackingRecord>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let connection = open_tracking_db(path)?;
+    let mut statement = connection.prepare(
+        "SELECT command,
+                optimized_command_label,
+                cwd,
+                project,
+                input_tokens,
+                output_tokens,
+                saved_tokens,
+                savings_pct,
+                elapsed_ms,
+                timestamp
+         FROM tracking_records
+         ORDER BY id ASC",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(TrackingRecord {
+            command: row.get(0)?,
+            optimized_command_label: row.get(1)?,
+            cwd: row.get(2)?,
+            project: row.get(3)?,
+            input_tokens: row.get::<_, i64>(4)?.max(0) as u64,
+            output_tokens: row.get::<_, i64>(5)?.max(0) as u64,
+            saved_tokens: row.get(6)?,
+            savings_pct: row.get(7)?,
+            elapsed_ms: row.get::<_, i64>(8)?.max(0) as u64,
+            timestamp: row.get(9)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+fn open_tracking_db(path: &Path) -> Result<Connection> {
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open tracking sqlite db {}", path.display()))?;
+    initialize_tracking_db(&connection)?;
+    Ok(connection)
+}
+
+fn initialize_tracking_db(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "
+        PRAGMA journal_mode = WAL;
+        PRAGMA busy_timeout = 5000;
+        CREATE TABLE IF NOT EXISTS tracking_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            command TEXT NOT NULL,
+            optimized_command_label TEXT NOT NULL,
+            cwd TEXT NOT NULL,
+            project TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            saved_tokens INTEGER NOT NULL,
+            savings_pct REAL NOT NULL,
+            elapsed_ms INTEGER NOT NULL,
+            timestamp INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracking_records_command
+            ON tracking_records(command);
+        CREATE INDEX IF NOT EXISTS idx_tracking_records_project
+            ON tracking_records(project);
+        CREATE INDEX IF NOT EXISTS idx_tracking_records_timestamp
+            ON tracking_records(timestamp);
+        ",
+    )?;
+    Ok(())
+}
+
+fn is_jsonl_path(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("jsonl" | "json")
+    )
 }
 
 struct LedgerLock {
@@ -464,6 +604,24 @@ mod tests {
     }
 
     #[test]
+    fn appends_and_loads_sqlite_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".agentgrep/tracking.sqlite");
+        let first = record("rg foo", "repo", 100, 20, 7);
+        let second = record("git status", "repo", 40, 10, 3);
+
+        append_record_to_path(&path, &first).unwrap();
+        append_record_to_path(&path, &second).unwrap();
+
+        let loaded = load_tracking_records(&path).unwrap();
+        assert_eq!(loaded, vec![first.clone(), second.clone()]);
+        let summary = summarize_tracking_path(&path).unwrap();
+        assert_eq!(summary.total_records, 2);
+        assert_eq!(summary.total_saved_tokens, 110);
+        assert_eq!(summary.by_command[0].key, "rg foo");
+    }
+
+    #[test]
     fn load_skips_malformed_jsonl_records() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("tracking.jsonl");
@@ -479,7 +637,7 @@ mod tests {
     #[test]
     fn concurrent_appends_do_not_interleave_records() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("tracking.jsonl");
+        let path = tmp.path().join("tracking.sqlite");
         let mut handles = Vec::new();
         for idx in 0..8 {
             let path = path.clone();
@@ -542,6 +700,19 @@ mod tests {
             env::remove_var(TRACKING_ENV);
             env::remove_var(TRACKING_PATH_ENV);
         }
+    }
+
+    #[test]
+    fn default_config_uses_sqlite_tracking_db() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            env::remove_var(TRACKING_ENV);
+            env::remove_var(TRACKING_PATH_ENV);
+        }
+
+        let config = TrackingConfig::from_env();
+
+        assert_eq!(config.path, PathBuf::from(DEFAULT_TRACKING_PATH));
     }
 
     #[test]
