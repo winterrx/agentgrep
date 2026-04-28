@@ -418,7 +418,7 @@ pub fn summarize_tracking_records(records: &[TrackingRecord]) -> TrackingSummary
     for record in records {
         total.add(record);
         by_command
-            .entry(record.command.clone())
+            .entry(command_type(&record.command))
             .or_insert_with(GroupAccumulator::default)
             .add(record);
         by_project
@@ -465,6 +465,86 @@ pub fn sanitize_command(command: &str) -> String {
         }
     }
     sanitized.join(" ")
+}
+
+pub fn command_type(command: &str) -> String {
+    let Ok(words) = shell_words::split(command) else {
+        return command
+            .split_whitespace()
+            .next()
+            .unwrap_or("unknown")
+            .to_string();
+    };
+    let Some(first) = words.first().map(String::as_str) else {
+        return "unknown".to_string();
+    };
+    match first {
+        "git" => match git_subcommand(&words).as_deref() {
+            Some(subcommand) => format!("git {subcommand}"),
+            None => "git".to_string(),
+        },
+        "cargo" => match words.get(1).map(String::as_str) {
+            Some(subcommand) => format!("cargo {subcommand}"),
+            None => "cargo".to_string(),
+        },
+        "python" | "python3" if words.get(1).map(String::as_str) == Some("-m") => {
+            match words.get(2).map(String::as_str) {
+                Some(module) => format!("{first} -m {module}"),
+                None => format!("{first} -m"),
+            }
+        }
+        "npm" | "pnpm" | "yarn" => package_manager_type(first, &words),
+        "npx" => words
+            .iter()
+            .skip(1)
+            .find(|word| !word.starts_with('-'))
+            .map(|runner| format!("npx {runner}"))
+            .unwrap_or_else(|| "npx".to_string()),
+        other => other.to_string(),
+    }
+}
+
+fn git_subcommand(words: &[String]) -> Option<String> {
+    let mut i = 1;
+    while i < words.len() {
+        let word = &words[i];
+        if word == "--" {
+            i += 1;
+            break;
+        }
+        if word == "-c" || word == "-C" || word == "--git-dir" || word == "--work-tree" {
+            i += 2;
+            continue;
+        }
+        if word.starts_with("--git-dir=")
+            || word.starts_with("--work-tree=")
+            || word.starts_with("--namespace=")
+        {
+            i += 1;
+            continue;
+        }
+        if word.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        return Some(word.clone());
+    }
+    words.get(i).cloned()
+}
+
+fn package_manager_type(executable: &str, words: &[String]) -> String {
+    match words.get(1).map(String::as_str) {
+        Some("run") => words
+            .get(2)
+            .map(|script| format!("{executable} run {script}"))
+            .unwrap_or_else(|| format!("{executable} run")),
+        Some("exec" | "dlx") => words
+            .get(2)
+            .map(|tool| format!("{executable} exec {tool}"))
+            .unwrap_or_else(|| format!("{executable} exec")),
+        Some(script) => format!("{executable} {script}"),
+        None => executable.to_string(),
+    }
 }
 
 fn sorted_groups(groups: BTreeMap<String, GroupAccumulator>) -> Vec<TrackingGroupSummary> {
@@ -618,7 +698,7 @@ mod tests {
         let summary = summarize_tracking_path(&path).unwrap();
         assert_eq!(summary.total_records, 2);
         assert_eq!(summary.total_saved_tokens, 110);
-        assert_eq!(summary.by_command[0].key, "rg foo");
+        assert_eq!(summary.by_command[0].key, "rg");
     }
 
     #[test]
@@ -674,10 +754,31 @@ mod tests {
         assert_eq!(summary.total_input_tokens, 220);
         assert_eq!(summary.total_output_tokens, 65);
         assert_eq!(summary.total_saved_tokens, 155);
-        assert_eq!(summary.by_command[0].key, "rg foo");
+        assert_eq!(summary.by_command[0].key, "rg");
         assert_eq!(summary.by_command[0].records, 2);
         assert_eq!(summary.by_project[0].key, "alpha");
         assert_eq!(summary.by_project[0].saved_tokens, 125);
+    }
+
+    #[test]
+    fn groups_by_command_type_not_full_command() {
+        assert_eq!(command_type("rg agentgrep README.md"), "rg");
+        assert_eq!(command_type("grep -R stripe ."), "grep");
+        assert_eq!(command_type("find . -type f"), "find");
+        assert_eq!(command_type("git status --short --branch"), "git status");
+        assert_eq!(command_type("git grep agentgrep -- README.md"), "git grep");
+        assert_eq!(
+            command_type("git -c protocol.version=2 status --short"),
+            "git status"
+        );
+        assert_eq!(command_type("git -C /tmp/repo diff --stat"), "git diff");
+        assert_eq!(command_type("cargo test -- --list"), "cargo test");
+        assert_eq!(command_type("python -m pytest -q"), "python -m pytest");
+        assert_eq!(
+            command_type("npm run typecheck -- --watch"),
+            "npm run typecheck"
+        );
+        assert_eq!(command_type("npx --no-install vitest run"), "npx vitest");
     }
 
     #[test]

@@ -1054,9 +1054,10 @@ fn gain_tracking_uses_sqlite_by_default_path_shape() {
     assert!(gain.status.success(), "{stdout}");
     assert!(stdout.contains("Ledger"), "{stdout}");
     assert!(stdout.contains("Records      1"), "{stdout}");
-    assert!(stdout.contains("Top Commands"), "{stdout}");
+    assert!(stdout.contains("Command Types"), "{stdout}");
     assert!(stdout.contains("Projects"), "{stdout}");
-    assert!(stdout.contains("printf hello"), "{stdout}");
+    assert!(stdout.contains("printf"), "{stdout}");
+    assert!(!stdout.contains("printf hello"), "{stdout}");
 }
 
 #[test]

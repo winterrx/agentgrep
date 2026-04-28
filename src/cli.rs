@@ -377,8 +377,8 @@ fn execute_gain(args: GainArgs) -> Result<ExecResult> {
 
     render_gain_table(
         &mut out,
-        "Top Commands",
-        "command",
+        "Command Types",
+        "type",
         &summary.by_command,
         options.limit,
     );
