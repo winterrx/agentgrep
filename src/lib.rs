@@ -7,6 +7,7 @@ pub mod exec;
 pub mod file_view;
 pub mod filters;
 pub mod git_compact;
+pub mod hooks;
 pub mod index;
 pub mod line_read;
 pub mod output;

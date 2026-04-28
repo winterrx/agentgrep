@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::{env, iter};
 
 fn agentgrep() -> PathBuf {
@@ -35,6 +36,24 @@ fn run_agentgrep_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> O
         command.env(key, value);
     }
     command.output().expect("agentgrep command runs")
+}
+
+fn run_agentgrep_with_stdin(cwd: &Path, args: &[&str], stdin: &str) -> Output {
+    let mut child = Command::new(agentgrep())
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("agentgrep command spawns");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin is piped")
+        .write_all(stdin.as_bytes())
+        .expect("hook stdin writes");
+    child.wait_with_output().expect("agentgrep command runs")
 }
 
 #[test]
@@ -1132,4 +1151,91 @@ fn git_grep_and_git_tree_are_compacted() {
     assert!(tree_stdout.contains("agentgrep optimized: git ls-tree -r --name-only HEAD"));
     assert!(tree_stdout.contains("git ls-tree:"));
     assert!(tree_stdout.contains("Truncated:"));
+}
+
+#[test]
+fn hooks_install_claude_writes_project_settings() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = run_agentgrep(
+        tmp.path(),
+        &[
+            "hooks",
+            "install-claude",
+            "--scope",
+            "project",
+            "--agentgrep",
+            "/tmp/agentgrep",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    let settings = fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    let hooks = value["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(hooks[0]["matcher"], "Bash");
+    assert_eq!(
+        hooks[0]["hooks"][0]["command"],
+        "/tmp/agentgrep hooks claude-pre-tool-use"
+    );
+}
+
+#[test]
+fn hooks_install_codex_writes_hooks_and_feature_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let output = run_agentgrep(
+        tmp.path(),
+        &[
+            "hooks",
+            "install-codex",
+            "--scope",
+            "project",
+            "--agentgrep",
+            "/tmp/agentgrep",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    let hooks = fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&hooks).unwrap();
+    assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "^Bash$");
+    assert_eq!(
+        value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "/tmp/agentgrep hooks codex-session-start"
+    );
+    let config = fs::read_to_string(tmp.path().join(".codex/config.toml")).unwrap();
+    assert!(
+        config.contains("[features]\ncodex_hooks = true"),
+        "{config}"
+    );
+}
+
+#[test]
+fn claude_pre_tool_use_rewrites_safe_bash_and_preserves_fields() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "rg stripe",
+            "description": "Search stripe",
+            "timeout": 120000
+        }
+    });
+    let output = run_agentgrep_with_stdin(
+        tmp.path(),
+        &["hooks", "claude-pre-tool-use"],
+        &input.to_string(),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let hook_output = &value["hookSpecificOutput"];
+    assert_eq!(hook_output["hookEventName"], "PreToolUse");
+    assert_eq!(hook_output["permissionDecision"], "allow");
+    assert_eq!(
+        hook_output["updatedInput"]["command"],
+        "agentgrep run 'rg stripe'"
+    );
+    assert_eq!(hook_output["updatedInput"]["description"], "Search stripe");
+    assert_eq!(hook_output["updatedInput"]["timeout"], 120000);
 }

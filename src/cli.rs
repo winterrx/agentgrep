@@ -1,12 +1,13 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::bench;
 use crate::deps;
 use crate::doctor;
 use crate::file_view;
+use crate::hooks;
 use crate::index;
 use crate::output::{ExecResult, OutputOptions};
 use crate::repo_map;
@@ -49,6 +50,8 @@ pub enum Commands {
     Deps(DepsArgs),
     /// Install or inspect opt-in shell command shims.
     Shims(ShimsArgs),
+    /// Install and run coding-agent hook integrations.
+    Hooks(HooksArgs),
     /// Execute a command from an installed shim.
     #[command(hide = true)]
     ShimExec(ShimExecArgs),
@@ -178,6 +181,62 @@ pub struct TraceArgs {
 pub struct ShimsArgs {
     #[command(subcommand)]
     pub command: ShimsCommands,
+}
+
+#[derive(Debug, Args)]
+pub struct HooksArgs {
+    #[command(subcommand)]
+    pub command: HooksCommands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HooksCommands {
+    /// Install Claude Code hooks that rewrite safe Bash calls through agentgrep.
+    InstallClaude(ClaudeHooksInstallArgs),
+    /// Install Codex hooks for agentgrep session context and Bash observability.
+    InstallCodex(CodexHooksInstallArgs),
+    /// Handle Claude Code PreToolUse hook input.
+    #[command(hide = true)]
+    ClaudePreToolUse,
+    /// Handle Codex PreToolUse hook input.
+    #[command(hide = true)]
+    CodexPreToolUse,
+    /// Handle Codex SessionStart hook input.
+    #[command(hide = true)]
+    CodexSessionStart,
+}
+
+#[derive(Debug, Args)]
+pub struct ClaudeHooksInstallArgs {
+    /// Hook scope to write.
+    #[arg(long, value_enum, default_value_t = ClaudeHookScope::Project)]
+    pub scope: ClaudeHookScope,
+    /// Agentgrep binary path to embed in hook commands. Defaults to the current executable.
+    #[arg(long)]
+    pub agentgrep: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct CodexHooksInstallArgs {
+    /// Hook scope to write.
+    #[arg(long, value_enum, default_value_t = CodexHookScope::Project)]
+    pub scope: CodexHookScope,
+    /// Agentgrep binary path to embed in hook commands. Defaults to the current executable.
+    #[arg(long)]
+    pub agentgrep: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ClaudeHookScope {
+    User,
+    Project,
+    Local,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CodexHookScope {
+    User,
+    Project,
 }
 
 #[derive(Debug, Subcommand)]
@@ -336,6 +395,7 @@ pub fn execute(cli: Cli) -> Result<ExecResult> {
         Commands::Gain(args) => execute_gain(args),
         Commands::Deps(args) => deps::execute_deps(&args.path, (&args.output).into()),
         Commands::Shims(args) => shims::execute_shims(args),
+        Commands::Hooks(args) => hooks::execute_hooks(args),
         Commands::ShimExec(args) => shims::execute_shim_exec(args),
         Commands::Doctor(args) => doctor::execute_doctor((&args.output).into()),
     }
