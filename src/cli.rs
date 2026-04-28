@@ -385,9 +385,9 @@ pub struct DoctorArgs {
 
 #[derive(Debug, Args)]
 pub struct GainArgs {
-    /// Tracking SQLite database path. Legacy .jsonl ledgers are still readable.
-    #[arg(long, default_value = ".agentgrep/tracking.sqlite")]
-    pub path: PathBuf,
+    /// Tracking SQLite database path. Defaults to ~/.agentgrep/tracking.sqlite.
+    #[arg(long)]
+    pub path: Option<PathBuf>,
     #[command(flatten)]
     pub output: CommonOutputArgs,
 }
@@ -422,7 +422,8 @@ pub fn execute(cli: Cli) -> Result<ExecResult> {
 fn execute_gain(args: GainArgs) -> Result<ExecResult> {
     let options: OutputOptions = (&args.output).into();
     let options = options.normalized();
-    let summary = tracking::summarize_tracking_path(&args.path)?;
+    let path = args.path.unwrap_or_else(tracking::default_tracking_path);
+    let summary = tracking::summarize_tracking_path(&path)?;
     if options.json {
         return crate::output::json_result("agentgrep gain", true, 0, &[], false, &summary);
     }
@@ -430,7 +431,7 @@ fn execute_gain(args: GainArgs) -> Result<ExecResult> {
     let mut out = String::new();
     out.push_str("agentgrep gain\n");
     out.push_str("==============\n");
-    out.push_str(&format!("Ledger       {}\n", args.path.display()));
+    out.push_str(&format!("Ledger       {}\n", path.display()));
     out.push_str(&format!(
         "Records      {}\n",
         format_count(summary.total_records as i64)

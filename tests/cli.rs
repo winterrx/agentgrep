@@ -32,6 +32,12 @@ fn run_agentgrep(cwd: &Path, args: &[&str]) -> Output {
 fn run_agentgrep_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut command = Command::new(agentgrep());
     command.args(args).current_dir(cwd);
+    if !envs
+        .iter()
+        .any(|(key, _)| *key == "AGENTGREP_TRACKING" || *key == "AGENTGREP_TRACKING_PATH")
+    {
+        command.env("AGENTGREP_TRACKING", "0");
+    }
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -1077,6 +1083,45 @@ fn gain_tracking_uses_sqlite_by_default_path_shape() {
     assert!(stdout.contains("Projects"), "{stdout}");
     assert!(stdout.contains("printf"), "{stdout}");
     assert!(!stdout.contains("printf hello"), "{stdout}");
+}
+
+#[test]
+fn gain_tracking_defaults_to_user_level_sqlite_db() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let work = tmp.path().join("repo");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&work).unwrap();
+
+    let output = run_agentgrep_with_env(
+        &work,
+        &["run", "printf hello"],
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("AGENTGREP_TRACKING", "1"),
+        ],
+    );
+    assert!(output.status.success());
+    let db = home.join(".agentgrep/tracking.sqlite");
+    assert!(db.is_file());
+    assert!(!work.join(".agentgrep/tracking.sqlite").exists());
+
+    let gain = run_agentgrep_with_env(
+        &work,
+        &["gain"],
+        &[
+            ("HOME", home.to_str().unwrap()),
+            ("AGENTGREP_TRACKING", "1"),
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&gain.stdout);
+    assert!(gain.status.success(), "{stdout}");
+    assert!(
+        stdout.contains(&format!("Ledger       {}", db.display())),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Projects"), "{stdout}");
+    assert!(stdout.contains("repo"), "{stdout}");
 }
 
 #[test]

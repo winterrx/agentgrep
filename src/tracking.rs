@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 pub const TRACKING_ENV: &str = "AGENTGREP_TRACKING";
 pub const TRACKING_PATH_ENV: &str = "AGENTGREP_TRACKING_PATH";
-pub const DEFAULT_TRACKING_PATH: &str = ".agentgrep/tracking.sqlite";
+pub const DEFAULT_TRACKING_PATH: &str = "~/.agentgrep/tracking.sqlite";
 pub const LEGACY_TRACKING_PATH: &str = ".agentgrep/tracking.jsonl";
 static TRACKING_DISABLED: AtomicBool = AtomicBool::new(false);
 
@@ -32,9 +32,15 @@ impl TrackingConfig {
         let path = env::var_os(TRACKING_PATH_ENV)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_TRACKING_PATH));
+            .unwrap_or_else(default_tracking_path);
         Self { enabled, path }
     }
+}
+
+pub fn default_tracking_path() -> PathBuf {
+    home_dir()
+        .map(|home| home.join(".agentgrep/tracking.sqlite"))
+        .unwrap_or_else(|| PathBuf::from(".agentgrep/tracking.sqlite"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -576,6 +582,10 @@ fn project_name(cwd: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(PathBuf::from)
+}
+
 fn env_flag(name: &str) -> Option<bool> {
     match env::var(name).ok()?.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Some(true),
@@ -810,14 +820,24 @@ mod tests {
     #[test]
     fn default_config_uses_sqlite_tracking_db() {
         let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let old_home = env::var_os("HOME");
         unsafe {
+            env::set_var("HOME", tmp.path());
             env::remove_var(TRACKING_ENV);
             env::remove_var(TRACKING_PATH_ENV);
         }
 
         let config = TrackingConfig::from_env();
 
-        assert_eq!(config.path, PathBuf::from(DEFAULT_TRACKING_PATH));
+        assert_eq!(config.path, tmp.path().join(".agentgrep/tracking.sqlite"));
+        unsafe {
+            if let Some(old_home) = old_home {
+                env::set_var("HOME", old_home);
+            } else {
+                env::remove_var("HOME");
+            }
+        }
     }
 
     #[test]
