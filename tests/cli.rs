@@ -255,14 +255,14 @@ fn shims_install_status_and_uninstall() {
     let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
     let install_stdout = String::from_utf8_lossy(&installed.stdout);
     assert!(installed.status.success());
-    assert!(install_stdout.contains("installed: 19"));
+    assert!(install_stdout.contains("installed: 28"));
     assert!(dir.join("rg").is_file());
 
     let status = run_agentgrep(tmp.path(), &["shims", "status", "--dir", &dir_arg]);
     let status_stdout = String::from_utf8_lossy(&status.stdout);
     assert!(status.status.success());
     assert!(status_stdout.contains("rg: installed"));
-    assert!(status_stdout.contains("installed: 19/19"));
+    assert!(status_stdout.contains("installed: 28/28"));
 
     let uninstalled = run_agentgrep(tmp.path(), &["shims", "uninstall", "--dir", &dir_arg]);
     assert!(uninstalled.status.success());

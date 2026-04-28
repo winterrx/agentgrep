@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MIN_TEE_BYTES: usize = 500;
+const DEFAULT_MAX_TEE_FILES: usize = 20;
+const DEFAULT_MAX_TEE_BYTES: usize = 1_048_576;
 static TEE_DISABLED: AtomicBool = AtomicBool::new(false);
 
 pub fn tee_raw_output(command: &str, stdout: &[u8], stderr: &[u8], force: bool) -> Option<String> {
@@ -24,6 +26,7 @@ pub fn tee_raw_output(command: &str, stdout: &[u8], stderr: &[u8], force: bool) 
     std::fs::create_dir_all(&dir).ok()?;
     let epoch = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let path = dir.join(format!("{}_{}.log", epoch, sanitize(command)));
+    let max_bytes = max_tee_bytes();
     let mut bytes = Vec::with_capacity(raw_len + 64);
     bytes.extend_from_slice(stdout);
     if !stderr.is_empty() {
@@ -33,7 +36,9 @@ pub fn tee_raw_output(command: &str, stdout: &[u8], stderr: &[u8], force: bool) 
         bytes.extend_from_slice(b"\n--- stderr ---\n");
         bytes.extend_from_slice(stderr);
     }
+    truncate_bytes_at_char_boundary(&mut bytes, max_bytes);
     std::fs::write(&path, bytes).ok()?;
+    cleanup_old_files(&dir, max_tee_files());
     Some(format!("Full output: {}", display_path(&path)))
 }
 
@@ -58,6 +63,52 @@ fn tee_dir() -> PathBuf {
     std::env::var_os("AGENTGREP_TEE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".agentgrep/tee"))
+}
+
+fn max_tee_files() -> usize {
+    std::env::var("AGENTGREP_TEE_MAX_FILES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_MAX_TEE_FILES)
+        .max(1)
+}
+
+fn max_tee_bytes() -> usize {
+    std::env::var("AGENTGREP_TEE_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_MAX_TEE_BYTES)
+        .max(256)
+}
+
+fn truncate_bytes_at_char_boundary(bytes: &mut Vec<u8>, max_bytes: usize) {
+    if bytes.len() <= max_bytes {
+        return;
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && std::str::from_utf8(&bytes[..boundary]).is_err() {
+        boundary -= 1;
+    }
+    bytes.truncate(boundary);
+    bytes.extend_from_slice(format!("\n\n--- truncated at {max_bytes} bytes ---\n").as_bytes());
+}
+
+fn cleanup_old_files(dir: &Path, max_files: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut logs = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "log"))
+        .collect::<Vec<_>>();
+    if logs.len() <= max_files {
+        return;
+    }
+    logs.sort_by_key(|entry| entry.file_name());
+    let remove_count = logs.len().saturating_sub(max_files);
+    for entry in logs.into_iter().take(remove_count) {
+        let _ = std::fs::remove_file(entry.path());
+    }
 }
 
 fn sanitize(command: &str) -> String {
@@ -96,5 +147,14 @@ mod tests {
     fn can_disable_tee_for_benchmarks() {
         let hint = with_tee_disabled(|| tee_raw_output("rg x", b"stdout", b"", true));
         assert!(hint.is_none());
+    }
+
+    #[test]
+    fn truncates_tee_bytes() {
+        let mut bytes = "abcdef".as_bytes().to_vec();
+        truncate_bytes_at_char_boundary(&mut bytes, 3);
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.starts_with("abc"));
+        assert!(text.contains("truncated at 3 bytes"));
     }
 }

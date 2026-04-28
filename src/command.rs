@@ -99,8 +99,18 @@ pub enum GitReadOnly {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TestCommand {
     CargoTest,
+    CargoCheck,
+    CargoClippy,
     Pytest,
     GoTest,
+    Npm,
+    Pnpm,
+    Yarn,
+    Vitest,
+    Jest,
+    Playwright,
+    Ruff,
+    Mypy,
 }
 
 impl GitReadOnly {
@@ -156,6 +166,15 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand, ParseCommandError> 
         "pytest" | "py.test" => parse_pytest(&words),
         "python" | "python3" => parse_python(&words),
         "go" => parse_go(&words),
+        "npm" => parse_node_package_manager(&words, TestCommand::Npm),
+        "pnpm" => parse_node_package_manager(&words, TestCommand::Pnpm),
+        "yarn" => parse_node_package_manager(&words, TestCommand::Yarn),
+        "npx" => parse_npx(&words),
+        "vitest" => Ok(ParsedCommand::Test(TestCommand::Vitest)),
+        "jest" => Ok(ParsedCommand::Test(TestCommand::Jest)),
+        "playwright" => Ok(ParsedCommand::Test(TestCommand::Playwright)),
+        "ruff" => Ok(ParsedCommand::Test(TestCommand::Ruff)),
+        "mypy" => Ok(ParsedCommand::Test(TestCommand::Mypy)),
         "deps" => parse_deps(&words),
         _ => Ok(ParsedCommand::Unsupported {
             reason: format!("unsupported command: {}", words[0]),
@@ -164,12 +183,61 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand, ParseCommandError> 
 }
 
 fn parse_cargo(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
-    if words.get(1).map(String::as_str) == Some("test") {
-        Ok(ParsedCommand::Test(TestCommand::CargoTest))
+    match words.get(1).map(String::as_str) {
+        Some("test") => Ok(ParsedCommand::Test(TestCommand::CargoTest)),
+        Some("check") => Ok(ParsedCommand::Test(TestCommand::CargoCheck)),
+        Some("clippy") => Ok(ParsedCommand::Test(TestCommand::CargoClippy)),
+        _ => Ok(ParsedCommand::Unsupported {
+            reason: "cargo command is not cargo test/check/clippy".to_string(),
+        }),
+    }
+}
+
+fn parse_node_package_manager(
+    words: &[String],
+    command: TestCommand,
+) -> Result<ParsedCommand, ParseCommandError> {
+    let Some(script) = node_script_name(words) else {
+        return Ok(ParsedCommand::Unsupported {
+            reason: "package-manager command is not a test/build/lint script".to_string(),
+        });
+    };
+    if matches!(
+        script,
+        "test" | "build" | "lint" | "typecheck" | "check" | "vitest" | "jest" | "playwright"
+    ) {
+        Ok(ParsedCommand::Test(command))
     } else {
         Ok(ParsedCommand::Unsupported {
-            reason: "cargo command is not cargo test".to_string(),
+            reason: "package-manager script is passed through".to_string(),
         })
+    }
+}
+
+fn node_script_name(words: &[String]) -> Option<&str> {
+    let first = words.get(1)?.as_str();
+    if first == "run" {
+        return words.get(2).map(String::as_str);
+    }
+    if first == "exec" || first == "dlx" {
+        return words.get(2).map(String::as_str);
+    }
+    Some(first)
+}
+
+fn parse_npx(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    let runner = words
+        .iter()
+        .skip(1)
+        .find(|word| !word.starts_with('-'))
+        .map(String::as_str);
+    match runner {
+        Some("vitest") => Ok(ParsedCommand::Test(TestCommand::Vitest)),
+        Some("jest") => Ok(ParsedCommand::Test(TestCommand::Jest)),
+        Some("playwright") => Ok(ParsedCommand::Test(TestCommand::Playwright)),
+        _ => Ok(ParsedCommand::Unsupported {
+            reason: "npx command is not a known test runner".to_string(),
+        }),
     }
 }
 
@@ -1184,6 +1252,14 @@ mod tests {
             ParsedCommand::Test(TestCommand::CargoTest)
         );
         assert_eq!(
+            parse_command("cargo check").unwrap(),
+            ParsedCommand::Test(TestCommand::CargoCheck)
+        );
+        assert_eq!(
+            parse_command("cargo clippy --all-targets").unwrap(),
+            ParsedCommand::Test(TestCommand::CargoClippy)
+        );
+        assert_eq!(
             parse_command("pytest tests -q").unwrap(),
             ParsedCommand::Test(TestCommand::Pytest)
         );
@@ -1194,6 +1270,30 @@ mod tests {
         assert_eq!(
             parse_command("go test ./...").unwrap(),
             ParsedCommand::Test(TestCommand::GoTest)
+        );
+        assert_eq!(
+            parse_command("npm run test -- --watch=false").unwrap(),
+            ParsedCommand::Test(TestCommand::Npm)
+        );
+        assert_eq!(
+            parse_command("pnpm vitest run").unwrap(),
+            ParsedCommand::Test(TestCommand::Pnpm)
+        );
+        assert_eq!(
+            parse_command("npx playwright test").unwrap(),
+            ParsedCommand::Test(TestCommand::Playwright)
+        );
+        assert_eq!(
+            parse_command("npx --no-install vitest run").unwrap(),
+            ParsedCommand::Test(TestCommand::Vitest)
+        );
+        assert_eq!(
+            parse_command("ruff check .").unwrap(),
+            ParsedCommand::Test(TestCommand::Ruff)
+        );
+        assert_eq!(
+            parse_command("mypy src").unwrap(),
+            ParsedCommand::Test(TestCommand::Mypy)
         );
     }
 

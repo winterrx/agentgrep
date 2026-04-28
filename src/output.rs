@@ -60,6 +60,7 @@ pub struct ExecResult {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: i32,
+    pub baseline_output_tokens: Option<usize>,
 }
 
 impl ExecResult {
@@ -68,6 +69,7 @@ impl ExecResult {
             stdout: stdout.into(),
             stderr: Vec::new(),
             exit_code: 0,
+            baseline_output_tokens: None,
         }
     }
 
@@ -80,7 +82,13 @@ impl ExecResult {
             stdout: stdout.into(),
             stderr: stderr.into(),
             exit_code,
+            baseline_output_tokens: None,
         }
+    }
+
+    pub fn with_baseline_output_tokens(mut self, tokens: usize) -> Self {
+        self.baseline_output_tokens = Some(tokens);
+        self
     }
 }
 

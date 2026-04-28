@@ -30,17 +30,36 @@ pub fn execute_run_with_trace_label(
     trace_path: Option<PathBuf>,
 ) -> Result<ExecResult> {
     let trace_path = crate::trace::resolve_trace_path(trace_path);
-    if trace_path.is_none() {
-        return execute_run_inner(command, display_command, options);
-    }
 
     let started = Instant::now();
     let result = execute_run_inner(command, display_command, options);
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
     if let (Some(path), Ok(exec_result)) = (&trace_path, &result) {
-        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
         let _ = crate::trace::append_run_record(path, display_command, exec_result, elapsed_ms);
     }
+    if let Ok(exec_result) = &result {
+        let _ = append_tracking_record(display_command, exec_result, elapsed_ms);
+    }
     result
+}
+
+fn append_tracking_record(command: &str, exec_result: &ExecResult, elapsed_ms: f64) -> Result<()> {
+    let output_tokens = crate::output::estimate_tokens_from_bytes(
+        exec_result.stdout.len() + exec_result.stderr.len(),
+    );
+    let baseline = exec_result.baseline_output_tokens.unwrap_or(output_tokens);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let record = crate::tracking::TrackingRecord::from_input(crate::tracking::TrackingInput {
+        command: command.to_string(),
+        optimized_command_label: "agentgrep run".to_string(),
+        cwd,
+        project: None,
+        input_tokens: baseline as u64,
+        output_tokens: output_tokens as u64,
+        baseline_output_tokens: Some(baseline as u64),
+        elapsed_ms: elapsed_ms.round() as u64,
+    });
+    crate::tracking::append_tracking_record(&record)
 }
 
 fn execute_run_inner(
@@ -135,6 +154,15 @@ fn is_shimmed_command_family(command: &str) -> bool {
             | "python"
             | "python3"
             | "go"
+            | "npm"
+            | "pnpm"
+            | "yarn"
+            | "npx"
+            | "vitest"
+            | "jest"
+            | "playwright"
+            | "ruff"
+            | "mypy"
             | "deps"
     )
 }
@@ -164,12 +192,12 @@ fn execute_search_proxy(
     options: OutputOptions,
 ) -> Result<ExecResult> {
     let raw = run_shell_capture_real_tools(command, None)?;
+    let raw_tokens = crate::output::estimate_tokens_from_bytes(raw.stdout.len() + raw.stderr.len());
     if raw_fits_budget(options, &raw.stdout, &raw.stderr) {
-        return Ok(ExecResult::from_parts(
-            raw.stdout,
-            raw.stderr,
-            raw.exit_code,
-        ));
+        return Ok(
+            ExecResult::from_parts(raw.stdout, raw.stderr, raw.exit_code)
+                .with_baseline_output_tokens(raw_tokens),
+        );
     }
     let limit = options.limit;
 
@@ -225,4 +253,5 @@ fn execute_search_proxy(
         &raw.stderr,
         recovery_hint.as_deref(),
     )
+    .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }

@@ -6,6 +6,12 @@ use crate::output::{
     ExecResult, OutputOptions, json_result, push_budgeted_line, raw_fits_budget, status_footer,
 };
 
+pub use crate::parser::{
+    ParseResult, ParseTier, parse_jest_json, parse_jest_text, parse_mypy_json, parse_mypy_text,
+    parse_playwright_json, parse_playwright_text, parse_ruff_json, parse_ruff_text,
+    parse_vitest_json, parse_vitest_text,
+};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TestSummary {
     pub runner: String,
@@ -13,6 +19,7 @@ pub struct TestSummary {
     pub shown_lines: usize,
     pub omitted_lines: usize,
     pub truncated: bool,
+    pub parse: ParseResult,
     pub lines: Vec<String>,
 }
 
@@ -27,12 +34,16 @@ pub fn execute_test(
     }
     let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
     if raw_fits_budget(options, &captured.stdout, &captured.stderr) {
-        return Ok(ExecResult::from_parts(
-            captured.stdout,
-            captured.stderr,
-            captured.exit_code,
-        ));
+        let tokens = crate::output::estimate_tokens_from_bytes(
+            captured.stdout.len() + captured.stderr.len(),
+        );
+        return Ok(
+            ExecResult::from_parts(captured.stdout, captured.stderr, captured.exit_code)
+                .with_baseline_output_tokens(tokens),
+        );
     }
+    let raw_tokens =
+        crate::output::estimate_tokens_from_bytes(captured.stdout.len() + captured.stderr.len());
 
     let stdout = String::from_utf8_lossy(&captured.stdout);
     let summary = summarize_test_output(runner, &stdout, options.limit);
@@ -43,72 +54,52 @@ pub fn execute_test(
         captured.exit_code,
         &captured.stderr,
     )
+    .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }
 
 fn summarize_test_output(runner: TestCommand, stdout: &str, limit: usize) -> TestSummary {
-    let raw_lines: Vec<&str> = stdout.lines().collect();
-    let mut lines = Vec::new();
-    for line in &raw_lines {
-        let trimmed = line.trim();
-        if is_high_value_test_line(trimmed) {
-            lines.push((*line).to_string());
+    let parse = match runner {
+        TestCommand::CargoTest | TestCommand::CargoCheck | TestCommand::CargoClippy => {
+            crate::parser::parse_cargo_test(stdout, limit)
         }
-        if lines.len() >= limit {
-            break;
+        TestCommand::Pytest => crate::parser::parse_pytest(stdout, limit),
+        TestCommand::GoTest => crate::parser::parse_go_test(stdout, limit),
+        TestCommand::Vitest => crate::parser::parse_vitest_text(stdout, limit),
+        TestCommand::Jest => crate::parser::parse_jest_text(stdout, limit),
+        TestCommand::Playwright => crate::parser::parse_playwright_text(stdout, limit),
+        TestCommand::Ruff => crate::parser::parse_ruff_text(stdout, limit),
+        TestCommand::Mypy => crate::parser::parse_mypy_text(stdout, limit),
+        TestCommand::Npm | TestCommand::Pnpm | TestCommand::Yarn => {
+            crate::parser::parse_vitest_text(stdout, limit)
         }
-    }
-    if lines.is_empty() {
-        lines.extend(
-            raw_lines
-                .iter()
-                .rev()
-                .filter(|line| !line.trim().is_empty())
-                .take(limit)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .map(|line| (*line).to_string()),
-        );
-    }
-    let shown_lines = lines.len();
+    };
     TestSummary {
-        runner: match runner {
-            TestCommand::CargoTest => "cargo test",
-            TestCommand::Pytest => "pytest",
-            TestCommand::GoTest => "go test",
-        }
-        .to_string(),
-        raw_lines: raw_lines.len(),
-        shown_lines,
-        omitted_lines: raw_lines.len().saturating_sub(shown_lines),
-        truncated: shown_lines < raw_lines.len(),
-        lines,
+        runner: runner_name(runner).to_string(),
+        raw_lines: parse.raw_lines,
+        shown_lines: parse.shown_lines,
+        omitted_lines: parse.omitted_lines,
+        truncated: parse.truncated,
+        lines: parse.lines.clone(),
+        parse,
     }
 }
 
-fn is_high_value_test_line(line: &str) -> bool {
-    line.starts_with("test result:")
-        || line.starts_with("running ")
-        || line.starts_with("failures:")
-        || line.starts_with("FAILED ")
-        || line.starts_with("ERROR ")
-        || line.starts_with("FAIL ")
-        || line.starts_with("--- FAIL:")
-        || line.starts_with("FAIL\t")
-        || line.starts_with("ok  \t")
-        || line.starts_with("PASS")
-        || line.starts_with("error:")
-        || line.starts_with("error[")
-        || line.starts_with("warning:")
-        || line.starts_with("thread '")
-        || line.starts_with("---- ")
-        || line.starts_with('>')
-        || line.starts_with("E   ")
-        || line.contains(" panicked at ")
-        || line.contains("AssertionError")
-        || line.contains(".rs:")
-        || line.contains(".py:")
-        || line.contains(".go:")
+fn runner_name(runner: TestCommand) -> &'static str {
+    match runner {
+        TestCommand::CargoTest => "cargo test",
+        TestCommand::CargoCheck => "cargo check",
+        TestCommand::CargoClippy => "cargo clippy",
+        TestCommand::Pytest => "pytest",
+        TestCommand::GoTest => "go test",
+        TestCommand::Npm => "npm",
+        TestCommand::Pnpm => "pnpm",
+        TestCommand::Yarn => "yarn",
+        TestCommand::Vitest => "vitest",
+        TestCommand::Jest => "jest",
+        TestCommand::Playwright => "playwright",
+        TestCommand::Ruff => "ruff",
+        TestCommand::Mypy => "mypy",
+    }
 }
 
 fn render_test(
@@ -133,12 +124,20 @@ fn render_test(
     push_budgeted_line(
         &mut out,
         &format!(
-            "{}: {} raw stdout line(s), showing {}.",
-            summary.runner, summary.raw_lines, summary.shown_lines
+            "{}: {} parse, {} raw stdout line(s), showing {}.",
+            summary.runner,
+            parse_tier_label(summary.parse.tier),
+            summary.raw_lines,
+            summary.shown_lines
         ),
         options.budget,
         &mut budget_truncated,
     );
+    for marker in &summary.parse.markers {
+        if !push_budgeted_line(&mut out, marker, options.budget, &mut budget_truncated) {
+            break;
+        }
+    }
     for line in &summary.lines {
         if !push_budgeted_line(&mut out, line, options.budget, &mut budget_truncated) {
             break;
@@ -161,6 +160,14 @@ fn render_test(
     ))
 }
 
+fn parse_tier_label(tier: ParseTier) -> &'static str {
+    match tier {
+        ParseTier::Full => "full",
+        ParseTier::Degraded => "DEGRADED",
+        ParseTier::Passthrough => "PASSTHROUGH",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,7 +177,7 @@ mod tests {
         let output = "tests/a.py .\nFAILED tests/a.py::test_x - AssertionError\n1 failed, 1 passed in 0.10s\n";
         let summary = summarize_test_output(TestCommand::Pytest, output, 8);
         assert!(summary.lines.iter().any(|line| line.contains("FAILED")));
-        assert!(summary.truncated);
+        assert_eq!(summary.parse.tier, ParseTier::Full);
     }
 
     #[test]
@@ -190,5 +197,34 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("test result:"))
         );
+    }
+
+    #[test]
+    fn renders_degraded_marker() {
+        let output = "running 1 test\nfailures:\n---- tests::x stdout ----\nthread 'tests::x' panicked at src/lib.rs:1:1:\nboom\nextra\nextra\n";
+        let summary = summarize_test_output(TestCommand::CargoTest, output, 2);
+        let rendered = render_test("cargo test", &summary, OutputOptions::default(), 101, b"")
+            .expect("render succeeds");
+        let stdout = String::from_utf8(rendered.stdout).expect("utf8");
+        assert!(stdout.contains("DEGRADED"));
+        assert!(stdout.contains("structured parse exceeded output limit"));
+    }
+
+    #[test]
+    fn renders_passthrough_marker_and_preserves_stderr() {
+        let output = "noise 1\nnoise 2\nnoise 3\nnoise 4\n";
+        let summary = summarize_test_output(TestCommand::GoTest, output, 2);
+        let rendered = render_test(
+            "go test ./...",
+            &summary,
+            OutputOptions::default(),
+            1,
+            b"stderr detail",
+        )
+        .expect("render succeeds");
+        let stdout = String::from_utf8(rendered.stdout).expect("utf8");
+        assert!(stdout.contains("PASSTHROUGH"));
+        assert!(stdout.contains("omitted 2 stdout line"));
+        assert_eq!(rendered.stderr, b"stderr detail");
     }
 }

@@ -104,8 +104,34 @@ fn is_agentgrep_shim(path: &Path) -> bool {
 
 fn contains_agentgrep_shim(dir: &Path) -> bool {
     const COMMANDS: &[&str] = &[
-        "rg", "grep", "find", "ls", "cat", "git", "head", "tail", "sed", "nl", "wc", "tree",
-        "cargo", "pytest", "py.test", "python", "python3", "go", "deps",
+        "rg",
+        "grep",
+        "find",
+        "ls",
+        "cat",
+        "git",
+        "head",
+        "tail",
+        "sed",
+        "nl",
+        "wc",
+        "tree",
+        "cargo",
+        "pytest",
+        "py.test",
+        "python",
+        "python3",
+        "go",
+        "npm",
+        "pnpm",
+        "yarn",
+        "npx",
+        "vitest",
+        "jest",
+        "playwright",
+        "ruff",
+        "mypy",
+        "deps",
     ];
     COMMANDS
         .iter()

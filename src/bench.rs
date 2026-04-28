@@ -224,16 +224,18 @@ pub(crate) fn run_benchmark(
     let raw_probe = timed(|| {
         crate::tee::with_tee_disabled(|| {
             crate::trace::with_trace_disabled(|| {
-                run::execute_run(
-                    command,
-                    OutputOptions {
-                        raw: true,
-                        json: false,
-                        exact: options.exact,
-                        limit: options.limit,
-                        budget: options.budget,
-                    },
-                )
+                crate::tracking::with_tracking_disabled(|| {
+                    run::execute_run(
+                        command,
+                        OutputOptions {
+                            raw: true,
+                            json: false,
+                            exact: options.exact,
+                            limit: options.limit,
+                            budget: options.budget,
+                        },
+                    )
+                })
             })
         })
     })?;
@@ -254,22 +256,28 @@ pub(crate) fn run_benchmark(
             "proxy" => timed(|| {
                 crate::tee::with_tee_disabled(|| {
                     crate::trace::with_trace_disabled(|| {
-                        run::execute_run(
-                            command,
-                            OutputOptions {
-                                raw: false,
-                                json: false,
-                                exact: options.exact,
-                                limit: options.limit,
-                                budget: options.budget,
-                            },
-                        )
+                        crate::tracking::with_tracking_disabled(|| {
+                            run::execute_run(
+                                command,
+                                OutputOptions {
+                                    raw: false,
+                                    json: false,
+                                    exact: options.exact,
+                                    limit: options.limit,
+                                    budget: options.budget,
+                                },
+                            )
+                        })
                     })
                 })
             })?,
             "indexed" => timed(|| {
                 crate::tee::with_tee_disabled(|| {
-                    crate::trace::with_trace_disabled(|| execute_indexed_mode(command, options))
+                    crate::trace::with_trace_disabled(|| {
+                        crate::tracking::with_tracking_disabled(|| {
+                            execute_indexed_mode(command, options)
+                        })
+                    })
                 })
             })?,
             other => bail!("unknown bench compare mode: {other}"),
@@ -491,6 +499,8 @@ fn all_suite_commands() -> Result<Vec<String>> {
         }
     }
     if Path::new("Cargo.toml").is_file() {
+        commands.push("cargo check --quiet".to_string());
+        commands.push("cargo clippy --quiet --all-targets --all-features".to_string());
         commands.push("cargo test --quiet -- --list".to_string());
     }
     if command_exists("pytest").is_some()
@@ -501,7 +511,92 @@ fn all_suite_commands() -> Result<Vec<String>> {
     if Path::new("go.mod").is_file() {
         commands.push("go test ./...".to_string());
     }
+    commands.extend(node_suite_commands());
+    commands.extend(python_tool_suite_commands());
     Ok(commands)
+}
+
+fn node_suite_commands() -> Vec<String> {
+    if !Path::new("package.json").is_file() {
+        return Vec::new();
+    }
+
+    let package_json = fs::read_to_string("package.json").unwrap_or_default();
+    let package: serde_json::Value =
+        serde_json::from_str(&package_json).unwrap_or(serde_json::Value::Null);
+    let scripts = package
+        .get("scripts")
+        .and_then(|scripts| scripts.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let package_text = package_json.to_ascii_lowercase();
+    let has_script = |name: &str| scripts.contains_key(name);
+    let script_mentions = |needle: &str| {
+        scripts.values().any(|value| {
+            value
+                .as_str()
+                .map(|script| script.to_ascii_lowercase().contains(needle))
+                .unwrap_or(false)
+        })
+    };
+
+    let mut commands = Vec::new();
+    if command_exists("npm").is_some() && has_script("test") {
+        commands.push("npm test -- --watch=false".to_string());
+    }
+    if command_exists("pnpm").is_some()
+        && Path::new("pnpm-lock.yaml").is_file()
+        && has_script("test")
+    {
+        commands.push("pnpm test -- --watch=false".to_string());
+    }
+    if command_exists("yarn").is_some() && Path::new("yarn.lock").is_file() && has_script("test") {
+        commands.push("yarn test --watch=false".to_string());
+    }
+    if command_exists("npx").is_some()
+        && (package_text.contains("vitest") || script_mentions("vitest"))
+    {
+        commands.push("npx --no-install vitest run".to_string());
+    }
+    if command_exists("npx").is_some() && (package_text.contains("jest") || script_mentions("jest"))
+    {
+        commands.push("npx --no-install jest --listTests".to_string());
+    }
+    if command_exists("npx").is_some()
+        && (package_text.contains("playwright") || script_mentions("playwright"))
+    {
+        commands.push("npx --no-install playwright test --list".to_string());
+    }
+    commands
+}
+
+fn python_tool_suite_commands() -> Vec<String> {
+    let project_files = [
+        "pyproject.toml",
+        "ruff.toml",
+        ".ruff.toml",
+        "mypy.ini",
+        ".mypy.ini",
+        "setup.cfg",
+        "requirements.txt",
+        "requirements-dev.txt",
+    ];
+    let mut project_text = String::new();
+    for path in project_files {
+        if Path::new(path).is_file() {
+            project_text.push_str(&fs::read_to_string(path).unwrap_or_default());
+            project_text.push('\n');
+        }
+    }
+    let project_text = project_text.to_ascii_lowercase();
+    let mut commands = Vec::new();
+    if command_exists("ruff").is_some() && project_text.contains("ruff") {
+        commands.push("ruff check .".to_string());
+    }
+    if command_exists("mypy").is_some() && project_text.contains("mypy") {
+        commands.push("mypy .".to_string());
+    }
+    commands
 }
 
 fn sample_file() -> Option<PathBuf> {
@@ -713,6 +808,8 @@ mod tests {
             "sed -n '1,40p' ",
             "nl -ba ",
             "wc -l ",
+            "cargo check ",
+            "cargo clippy ",
             "cargo test ",
         ] {
             assert!(

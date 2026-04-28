@@ -1069,8 +1069,18 @@ fn command_family(command: &str) -> String {
         Ok(ParsedCommand::WcLines { .. }) => "wc -l".to_string(),
         Ok(ParsedCommand::Test(runner)) => match runner {
             crate::command::TestCommand::CargoTest => "cargo test".to_string(),
+            crate::command::TestCommand::CargoCheck => "cargo check".to_string(),
+            crate::command::TestCommand::CargoClippy => "cargo clippy".to_string(),
             crate::command::TestCommand::Pytest => "pytest".to_string(),
             crate::command::TestCommand::GoTest => "go test".to_string(),
+            crate::command::TestCommand::Npm => "npm".to_string(),
+            crate::command::TestCommand::Pnpm => "pnpm".to_string(),
+            crate::command::TestCommand::Yarn => "yarn".to_string(),
+            crate::command::TestCommand::Vitest => "vitest".to_string(),
+            crate::command::TestCommand::Jest => "jest".to_string(),
+            crate::command::TestCommand::Playwright => "playwright".to_string(),
+            crate::command::TestCommand::Ruff => "ruff".to_string(),
+            crate::command::TestCommand::Mypy => "mypy".to_string(),
         },
         Ok(ParsedCommand::Deps { .. }) => "deps".to_string(),
         Ok(ParsedCommand::Git(GitCommand::ReadOnly { subcommand, .. })) => {

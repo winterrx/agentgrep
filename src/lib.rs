@@ -10,6 +10,7 @@ pub mod git_compact;
 pub mod index;
 pub mod line_read;
 pub mod output;
+pub mod parser;
 pub mod repo_map;
 pub mod run;
 pub mod search;
@@ -17,6 +18,7 @@ pub mod shims;
 pub mod tee;
 pub mod test_runner;
 pub mod trace;
+pub mod tracking;
 
 use anyhow::Result;
 use clap::Parser;

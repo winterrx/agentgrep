@@ -14,6 +14,7 @@ use crate::run;
 use crate::search;
 use crate::shims;
 use crate::trace;
+use crate::tracking;
 
 #[derive(Debug, Parser)]
 #[command(name = "agentgrep")]
@@ -42,6 +43,8 @@ pub enum Commands {
     Bench(BenchArgs),
     /// Record, import, summarize, and replay agent command traces.
     Trace(TraceArgs),
+    /// Summarize persistent token savings tracking.
+    Gain(GainArgs),
     /// Summarize project dependency manifests.
     Deps(DepsArgs),
     /// Install or inspect opt-in shell command shims.
@@ -303,6 +306,15 @@ pub struct DoctorArgs {
     pub output: CommonOutputArgs,
 }
 
+#[derive(Debug, Args)]
+pub struct GainArgs {
+    /// Tracking JSONL ledger path.
+    #[arg(long, default_value = ".agentgrep/tracking.jsonl")]
+    pub path: PathBuf,
+    #[command(flatten)]
+    pub output: CommonOutputArgs,
+}
+
 pub fn execute(cli: Cli) -> Result<ExecResult> {
     match cli.command {
         Commands::Run(args) => {
@@ -321,9 +333,47 @@ pub fn execute(cli: Cli) -> Result<ExecResult> {
         Commands::Index(args) => index::execute_index(&args.path, (&args.output).into()),
         Commands::Bench(args) => bench::execute_bench(args),
         Commands::Trace(args) => trace::execute_trace(args),
+        Commands::Gain(args) => execute_gain(args),
         Commands::Deps(args) => deps::execute_deps(&args.path, (&args.output).into()),
         Commands::Shims(args) => shims::execute_shims(args),
         Commands::ShimExec(args) => shims::execute_shim_exec(args),
         Commands::Doctor(args) => doctor::execute_doctor((&args.output).into()),
     }
+}
+
+fn execute_gain(args: GainArgs) -> Result<ExecResult> {
+    let options: OutputOptions = (&args.output).into();
+    let options = options.normalized();
+    let summary = tracking::summarize_tracking_path(&args.path)?;
+    if options.json {
+        return crate::output::json_result("agentgrep gain", true, 0, &[], false, &summary);
+    }
+
+    let mut out = String::new();
+    out.push_str("agentgrep gain\n");
+    out.push_str(&format!("ledger: {}\n", args.path.display()));
+    out.push_str(&format!("records: {}\n", summary.total_records));
+    out.push_str(&format!(
+        "tokens: {} -> {} (saved {}, {:.1}%)\n",
+        summary.total_input_tokens,
+        summary.total_output_tokens,
+        summary.total_saved_tokens,
+        summary.avg_savings_pct
+    ));
+    out.push_str("by command:\n");
+    for group in summary.by_command.iter().take(options.limit) {
+        out.push_str(&format!(
+            "  {:>4} {:>8} saved {:>6.1}%  {}\n",
+            group.records, group.saved_tokens, group.avg_savings_pct, group.key
+        ));
+    }
+    out.push_str("by project:\n");
+    for group in summary.by_project.iter().take(options.limit) {
+        out.push_str(&format!(
+            "  {:>4} {:>8} saved {:>6.1}%  {}\n",
+            group.records, group.saved_tokens, group.avg_savings_pct, group.key
+        ));
+    }
+    out.push_str("Exit code: 0\n");
+    Ok(ExecResult::success(out))
 }

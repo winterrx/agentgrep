@@ -45,12 +45,16 @@ pub fn execute_git(
 
     let captured = crate::exec::run_shell_capture_real_tools(command, None)?;
     if raw_fits_budget(options, &captured.stdout, &captured.stderr) {
-        return Ok(ExecResult::from_parts(
-            captured.stdout,
-            captured.stderr,
-            captured.exit_code,
-        ));
+        let tokens = crate::output::estimate_tokens_from_bytes(
+            captured.stdout.len() + captured.stderr.len(),
+        );
+        return Ok(
+            ExecResult::from_parts(captured.stdout, captured.stderr, captured.exit_code)
+                .with_baseline_output_tokens(tokens),
+        );
     }
+    let raw_tokens =
+        crate::output::estimate_tokens_from_bytes(captured.stdout.len() + captured.stderr.len());
     let summary = summarize_git_output(subcommand, &captured, options.limit);
     let recovery_hint = crate::tee::tee_raw_output(
         command,
@@ -66,6 +70,7 @@ pub fn execute_git(
         &captured.stderr,
         recovery_hint.as_deref(),
     )
+    .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }
 
 fn execute_log_compact(
@@ -81,6 +86,8 @@ fn execute_log_compact(
             captured.exit_code,
         ));
     }
+    let raw_tokens =
+        crate::output::estimate_tokens_from_bytes(captured.stdout.len() + captured.stderr.len());
     let text = String::from_utf8_lossy(&captured.stdout);
     let lines = compact_log_output(&text, options.limit, false);
     let summary = GitSummary {
@@ -99,6 +106,7 @@ fn execute_log_compact(
         &captured.stderr,
         None,
     )
+    .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }
 
 fn execute_status_porcelain(
@@ -114,6 +122,8 @@ fn execute_status_porcelain(
             captured.exit_code,
         ));
     }
+    let raw_tokens =
+        crate::output::estimate_tokens_from_bytes(captured.stdout.len() + captured.stderr.len());
     let lines = compact_porcelain_status(&captured.stdout, options.limit);
     let shown_lines = lines.len();
     let summary = GitSummary {
@@ -132,6 +142,7 @@ fn execute_status_porcelain(
         &captured.stderr,
         None,
     )
+    .map(|result| result.with_baseline_output_tokens(raw_tokens))
 }
 
 pub fn summarize_git_output(
