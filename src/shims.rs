@@ -208,6 +208,18 @@ fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> 
     let agentgrep = agentgrep
         .to_str()
         .ok_or_else(|| anyhow!("agentgrep path is not valid UTF-8: {}", agentgrep.display()))?;
+    let fast_passthrough = match real_program {
+        Some(real_program) => {
+            let real_program = real_program.to_str().ok_or_else(|| {
+                anyhow!(
+                    "real executable path is not valid UTF-8: {}",
+                    real_program.display()
+                )
+            })?;
+            fast_passthrough_script(command, real_program)
+        }
+        None => String::new(),
+    };
     let stdin_passthrough = match real_program {
         Some(real_program) => {
             let real_program = real_program.to_str().ok_or_else(|| {
@@ -227,6 +239,7 @@ fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> 
     Ok(format!(
         r#"#!/bin/sh
 {marker}
+{fast_passthrough}
 shim_dir=$(dirname "$0")
 case "$shim_dir" in
   /*) ;;
@@ -254,10 +267,21 @@ export AGENTGREP_SHIM_ACTIVE=1
 exec {agentgrep} shim-exec {command} -- "$@"
 "#,
         marker = SHIM_MARKER,
+        fast_passthrough = fast_passthrough,
         stdin_passthrough = stdin_passthrough,
         agentgrep = shell_single_quote(agentgrep),
         command = shell_single_quote(command),
     ))
+}
+
+fn fast_passthrough_script(command: &str, real_program: &str) -> String {
+    if command != "git" {
+        return String::new();
+    }
+    format!(
+        "_ag_git_subcmd=\n_ag_git_skip_next=0\nfor _ag_git_arg do\n  if [ \"$_ag_git_skip_next\" = 1 ]; then\n    _ag_git_skip_next=0\n    continue\n  fi\n  case \"$_ag_git_arg\" in\n    -C|--git-dir|--work-tree|-c)\n      _ag_git_skip_next=1\n      ;;\n    --git-dir=*|--work-tree=*|-c=*)\n      ;;\n    -*)\n      ;;\n    *)\n      _ag_git_subcmd=$_ag_git_arg\n      break\n      ;;\n  esac\ndone\ncase \"$_ag_git_subcmd\" in\n  rev-parse|rev-list|remote|config)\n    exec {} \"$@\"\n    ;;\nesac\n",
+        shell_single_quote(real_program)
+    )
 }
 
 fn resolve_real_program(program: &str) -> Result<Option<PathBuf>> {
@@ -439,5 +463,18 @@ mod tests {
         assert!(script.contains("export AGENTGREP_SHIM_DIR=$shim_dir"));
         assert!(script.contains("exec '/opt/bin/rg' \"$@\""));
         assert!(script.contains("shim-exec 'rg' -- \"$@\""));
+    }
+
+    #[test]
+    fn git_shim_fast_passthroughs_metadata_probes() {
+        let script = shim_script(
+            "git",
+            Path::new("/tmp/agentgrep"),
+            Some(Path::new("/opt/bin/git")),
+        )
+        .unwrap();
+
+        assert!(script.contains("rev-parse|rev-list|remote|config"));
+        assert!(script.contains("exec '/opt/bin/git' \"$@\""));
     }
 }

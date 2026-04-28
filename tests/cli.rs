@@ -577,6 +577,46 @@ fn rg_shim_raw_env_matches_real_output() {
 }
 
 #[test]
+fn git_metadata_shim_bypasses_agentgrep_process() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let home = tmp.path().join("home");
+    let cwd = tmp.path().join("repo");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&cwd).unwrap();
+    Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&cwd)
+        .status()
+        .expect("git init runs");
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "git -C {} rev-parse --show-toplevel",
+            cwd.display()
+        ))
+        .current_dir(tmp.path())
+        .env("PATH", path)
+        .env("HOME", &home)
+        .output()
+        .expect("git shim runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert_eq!(
+        Path::new(stdout.trim()).canonicalize().unwrap(),
+        cwd.canonicalize().unwrap()
+    );
+    assert!(!home.join(".agentgrep").exists());
+}
+
+#[test]
 fn listing_shims_use_filtered_map_by_default() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("shims");
