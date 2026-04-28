@@ -5,6 +5,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -180,6 +182,7 @@ pub fn append_record_to_path(path: &Path, record: &TrackingRecord) -> Result<()>
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create tracking dir {}", parent.display()))?;
     }
+    let _guard = LedgerLock::acquire(path)?;
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -196,11 +199,76 @@ pub fn load_tracking_records(path: &Path) -> Result<Vec<TrackingRecord>> {
     }
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read tracking ledger {}", path.display()))?;
-    content
+    let records = content
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str(line).context("failed to parse tracking JSONL record"))
-        .collect()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    Ok(records)
+}
+
+struct LedgerLock {
+    path: PathBuf,
+}
+
+impl LedgerLock {
+    fn acquire(ledger_path: &Path) -> Result<Self> {
+        let lock_path = ledger_path.with_extension("jsonl.lock");
+        let started = SystemTime::now();
+        loop {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(mut lock) => {
+                    let pid = std::process::id();
+                    let _ = writeln!(lock, "{pid}");
+                    return Ok(Self { path: lock_path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    remove_stale_lock(&lock_path);
+                    let waited = started.elapsed().unwrap_or_default();
+                    if waited > Duration::from_secs(5) {
+                        anyhow::bail!(
+                            "timed out waiting for tracking ledger lock {}",
+                            lock_path.display()
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to create tracking ledger lock {}",
+                            lock_path.display()
+                        )
+                    });
+                }
+            }
+        }
+    }
+}
+
+impl Drop for LedgerLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn remove_stale_lock(lock_path: &Path) {
+    let Ok(metadata) = fs::metadata(lock_path) else {
+        return;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return;
+    };
+    if modified
+        .elapsed()
+        .is_ok_and(|age| age > Duration::from_secs(30))
+    {
+        let _ = fs::remove_file(lock_path);
+    }
 }
 
 pub fn summarize_tracking_records(records: &[TrackingRecord]) -> TrackingSummary {
@@ -393,6 +461,45 @@ mod tests {
         assert_eq!(loaded[0].saved_tokens, 80);
         assert_eq!(loaded[0].savings_pct, 80.0 / 120.0 * 100.0);
         assert_eq!(loaded[0].command, "rg token --password [REDACTED]");
+    }
+
+    #[test]
+    fn load_skips_malformed_jsonl_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tracking.jsonl");
+        let valid = record("rg foo", "repo", 10, 2, 1);
+        let valid_json = serde_json::to_string(&valid).unwrap();
+        fs::write(&path, format!("{valid_json}\n{{not json\n{valid_json}\n")).unwrap();
+
+        let loaded = load_tracking_records(&path).unwrap();
+
+        assert_eq!(loaded, vec![valid.clone(), valid]);
+    }
+
+    #[test]
+    fn concurrent_appends_do_not_interleave_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tracking.jsonl");
+        let mut handles = Vec::new();
+        for idx in 0..8 {
+            let path = path.clone();
+            handles.push(std::thread::spawn(move || {
+                for item in 0..10 {
+                    append_record_to_path(
+                        &path,
+                        &record(&format!("rg foo-{idx}-{item}"), "repo", 10, 2, 1),
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let loaded = load_tracking_records(&path).unwrap();
+
+        assert_eq!(loaded.len(), 80);
     }
 
     #[test]
