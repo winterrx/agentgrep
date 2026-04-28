@@ -92,11 +92,11 @@ Safety defaults:
 - Plain/verbose `git log` is rendered through a compact format that keeps commit hash, subject, relative date, author, and a few body lines; explicit user formats such as `--oneline`, `--pretty`, and `--format` are preserved.
 - `cargo test`, `cargo check`, `cargo clippy`, `pytest`, `python -m pytest`, `go test`, Node package-manager test scripts, `vitest`, `jest`, `playwright`, `ruff`, and `mypy` are recognized as runner/diagnostic commands. V1 only compacts large stdout while preserving stderr byte-for-byte, so compile errors and runner diagnostics are not silently hidden.
 - `deps` summarizes dependency manifests (`Cargo.toml`, `package.json`, `requirements.txt`, `pyproject.toml`, and `go.mod`) without pretending to be an exact manifest read.
-- Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `.agentgrep/tee`.
+- Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `~/.agentgrep/tee/<project>/`.
 - Optimized raw probes stream stdout/stderr instead of using one giant `Command::output()` buffer. Stdout capture is capped by `AGENTGREP_CAPTURE_MAX_STDOUT_BYTES` (default 4 MiB, `0` disables) for optimized renderers; `--raw` remains byte-for-byte exact and ignores this cap.
 - `--raw`, `AGENTGREP_DISABLE=1`, unsupported shimmed commands, and mutating `git` passthrough all bypass active agentgrep shim directories before running the underlying command.
 - Set `AGENTGREP_DISABLE=1` to bypass proxy optimization for `agentgrep run`.
-- Set `AGENTGREP_TEE=0` to disable full-output tee files.
+- Set `AGENTGREP_TEE=0` to disable full-output tee files, or `AGENTGREP_TEE_DIR=/path/to/base` to move the user-level tee base.
 - Shims also read `AGENTGREP_LIMIT`, `AGENTGREP_BUDGET`, `AGENTGREP_RAW`, `AGENTGREP_JSON`, and `AGENTGREP_EXACT` for default output behavior.
 
 ## Direct commands
@@ -120,18 +120,20 @@ agentgrep doctor
 Trace recording lets `agentgrep` learn the commands agents actually emit without capturing command output:
 
 ```bash
-agentgrep run "rg stripe" --trace .agentgrep/traces/commands.jsonl
-AGENTGREP_TRACE=.agentgrep/traces/commands.jsonl agentgrep run "git status"
-agentgrep trace import-codex --out .agentgrep/traces/codex.jsonl
-agentgrep trace import-claude --out .agentgrep/traces/claude.jsonl
-agentgrep trace summary .agentgrep/traces/codex.jsonl
-agentgrep trace replay .agentgrep/traces/codex.jsonl --repo . --compare raw,proxy,indexed
+agentgrep run "rg stripe" --trace ~/.agentgrep/traces/commands.jsonl
+AGENTGREP_TRACE=~/.agentgrep/traces/commands.jsonl agentgrep run "git status"
+agentgrep trace import-codex --out ~/.agentgrep/traces/codex.jsonl
+agentgrep trace import-claude --out ~/.agentgrep/traces/claude.jsonl
+agentgrep trace summary ~/.agentgrep/traces/codex.jsonl
+agentgrep trace replay ~/.agentgrep/traces/codex.jsonl --repo . --compare raw,proxy,indexed
 agentgrep gain
 ```
 
-Trace JSONL records command metadata only: command, cwd, family, timing, exit code, and output byte/token counts. It does not store stdout or stderr. `trace import-codex` reads local Codex `exec_command` calls from `~/.codex/logs_2.sqlite` using `sqlite3`, reconstructs streamed function-call argument deltas, unwraps dogfooded `agentgrep run "..."` calls back to the underlying command when safe, and writes a replayable JSONL trace. `trace import-claude` reads local Claude project JSONL logs from `~/.claude/projects` and imports Bash tool-call commands under the requested cwd subtree. `trace replay` benchmarks only safe read-only discovery commands; mutating `git`, unsupported commands, shell control operators, and redirections are skipped with reasons.
+Trace JSONL records command metadata only: command, cwd, family, timing, exit code, and output byte/token counts. It does not store stdout or stderr. `trace import-codex` reads local Codex `exec_command` calls from `~/.codex/logs_2.sqlite` using `sqlite3`, reconstructs streamed function-call argument deltas, unwraps dogfooded `agentgrep run "..."` calls back to the underlying command when safe, and writes a replayable JSONL trace. `trace import-claude` reads local Claude project JSONL logs from `~/.claude/projects` and imports Bash tool-call commands under the requested cwd subtree. Trace defaults use `~/.agentgrep/traces/` instead of project-local state. `trace replay` benchmarks only safe read-only discovery commands; mutating `git`, unsupported commands, shell control operators, and redirections are skipped with reasons.
 
 Persistent gain tracking records metadata only to `~/.agentgrep/tracking.sqlite` by default: sanitized command, cwd/project, input/output token estimates, saved tokens, savings percentage, and elapsed milliseconds. It never stores stdout or stderr. `agentgrep gain` summarizes global totals, per-command totals, and per-project totals from that user-level SQLite database. Set `AGENTGREP_TRACKING=0` to disable it, or `AGENTGREP_TRACKING_PATH=/path/to/tracking.sqlite` to move the ledger. Legacy `.jsonl` ledgers are still readable and writable when the configured path ends in `.jsonl`.
+
+Generated state defaults to user-level storage: gain tracking in `~/.agentgrep/tracking.sqlite`, tee recovery logs in `~/.agentgrep/tee/<project>/`, traces in `~/.agentgrep/traces/`, and indexes in `~/.agentgrep/index/<project>.json`.
 
 Common output controls:
 
@@ -150,7 +152,7 @@ The proxy follows RTK's conservative shape:
 - A conservative streaming runner drains raw stdout, stderr, and exit status before deciding whether compaction is safe; optimized stdout capture is bounded and any cap is disclosed, while `--raw` stays exact.
 - Parser tiers recognize high-confidence command families first, decline unsafe shell forms, and fall back to the real tool for unsupported commands.
 - Small raw output remains exact; large output is compacted only when the family has a conservative renderer.
-- Tee recovery can persist full raw stdout under `.agentgrep/tee` for truncated optimized output, while preserving stderr byte-for-byte.
+- Tee recovery can persist full raw stdout under `~/.agentgrep/tee/<project>/` for truncated optimized output, while preserving stderr byte-for-byte.
 - Trace and gain recording store command metadata so command-family coverage and savings can be improved without capturing command output.
 - Expanded test and check families are staged behind the same pattern: parse narrowly, cap output, preserve diagnostics, and leave honest raw fallback when the renderer is not integrated yet.
 
@@ -162,7 +164,7 @@ The benchmark command compares raw, proxy, and indexed modes:
 agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed
 agentgrep bench --suite discovery --compare raw,proxy,indexed
 agentgrep bench --suite all --compare raw,proxy,indexed
-agentgrep trace replay .agentgrep/traces/codex.jsonl --repo .
+agentgrep trace replay ~/.agentgrep/traces/codex.jsonl --repo .
 ```
 
 It reports raw/proxy/indexed time, output bytes, estimated tokens, token savings, speedup ratio, exit-code parity, stderr parity, and `--raw` exactness. Gates are reported for raw exactness, exit-code parity, stderr parity, truncation visibility, and 60% token savings when raw output is large enough to matter.

@@ -38,6 +38,12 @@ fn run_agentgrep_with_env(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> O
     {
         command.env("AGENTGREP_TRACKING", "0");
     }
+    if !envs
+        .iter()
+        .any(|(key, _)| *key == "AGENTGREP_TEE" || *key == "AGENTGREP_TEE_DIR")
+    {
+        command.env("AGENTGREP_TEE", "0");
+    }
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -1175,6 +1181,48 @@ fn gain_tracking_defaults_to_user_level_sqlite_db() {
     );
     assert!(stdout.contains("Projects"), "{stdout}");
     assert!(stdout.contains("repo"), "{stdout}");
+}
+
+#[test]
+fn trace_true_defaults_to_user_level_jsonl() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let work = tmp.path().join("repo");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&work).unwrap();
+
+    let output = run_agentgrep_with_env(
+        &work,
+        &["run", "printf hello"],
+        &[("HOME", home.to_str().unwrap()), ("AGENTGREP_TRACE", "1")],
+    );
+
+    assert!(output.status.success());
+    assert!(home.join(".agentgrep/traces/commands.jsonl").is_file());
+    assert!(!work.join(".agentgrep").exists());
+}
+
+#[test]
+fn index_defaults_to_user_level_project_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let work = tmp.path().join("repo");
+    fs::create_dir_all(home.join(".agentgrep")).unwrap();
+    fs::create_dir_all(work.join("src")).unwrap();
+    fs::write(work.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let output = run_agentgrep_with_env(
+        &work,
+        &["index", work.to_str().unwrap()],
+        &[("HOME", home.to_str().unwrap())],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    let index = home.join(".agentgrep/index/repo.json");
+    assert!(index.is_file());
+    assert!(stdout.contains(&format!("Wrote: {}", index.display())));
+    assert!(!work.join(".agentgrep").exists());
 }
 
 #[test]

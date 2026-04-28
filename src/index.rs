@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -40,11 +40,11 @@ struct IndexedFile {
 
 pub fn execute_index(path: &Path, options: OutputOptions) -> Result<ExecResult> {
     let options = options.normalized();
-    let (summary, document) = build_index(path)?;
-    let index_dir = path.join(".agentgrep");
-    fs::create_dir_all(&index_dir)
+    let index_path = user_index_path(path);
+    let (summary, document) = build_index(path, &index_path)?;
+    let index_dir = index_path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(index_dir)
         .with_context(|| format!("failed to create {}", index_dir.display()))?;
-    let index_path = index_dir.join("index.json");
     let bytes = serde_json::to_vec_pretty(&document)?;
     fs::write(&index_path, bytes)
         .with_context(|| format!("failed to write {}", index_path.display()))?;
@@ -77,7 +77,7 @@ pub fn execute_index(path: &Path, options: OutputOptions) -> Result<ExecResult> 
     Ok(ExecResult::success(out.into_bytes()))
 }
 
-fn build_index(path: &Path) -> Result<(IndexSummary, IndexDocument)> {
+fn build_index(path: &Path, index_path: &Path) -> Result<(IndexSummary, IndexDocument)> {
     let files = collect_source_files(&[path.to_path_buf()]);
     let mut indexed = Vec::new();
     let mut all_trigrams = BTreeSet::new();
@@ -113,7 +113,6 @@ fn build_index(path: &Path) -> Result<(IndexSummary, IndexDocument)> {
         });
     }
 
-    let index_path = path.join(".agentgrep/index.json");
     let summary = IndexSummary {
         version: INDEX_VERSION,
         root: path.display().to_string(),
@@ -133,6 +132,35 @@ fn build_index(path: &Path) -> Result<(IndexSummary, IndexDocument)> {
         files: indexed,
     };
     Ok((summary, document))
+}
+
+pub fn user_index_path(path: &Path) -> PathBuf {
+    let project = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(sanitize_slug)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown-project".to_string());
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| {
+            home.join(".agentgrep/index")
+                .join(format!("{project}.json"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".agentgrep/index").join(format!("{project}.json")))
+}
+
+fn sanitize_slug(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn relative(root: &Path, path: &Path) -> String {

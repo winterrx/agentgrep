@@ -314,7 +314,7 @@ pub struct TraceImportCodexArgs {
     #[arg(long, default_value = "~/.codex/logs_2.sqlite")]
     pub db: String,
     /// JSONL trace output path.
-    #[arg(long, default_value = ".agentgrep/traces/codex.jsonl")]
+    #[arg(long, default_value = "~/.agentgrep/traces/codex.jsonl")]
     pub out: PathBuf,
     /// Only import exec calls from this working directory subtree. Defaults to the current directory.
     #[arg(long)]
@@ -335,7 +335,7 @@ pub struct TraceImportClaudeArgs {
     #[arg(long, default_value = "~/.claude/projects")]
     pub dir: String,
     /// JSONL trace output path.
-    #[arg(long, default_value = ".agentgrep/traces/claude.jsonl")]
+    #[arg(long, default_value = "~/.agentgrep/traces/claude.jsonl")]
     pub out: PathBuf,
     /// Only import Bash calls from this working directory subtree. Defaults to the current directory.
     #[arg(long)]
@@ -350,7 +350,7 @@ pub struct TraceImportClaudeArgs {
 #[derive(Debug, Args)]
 pub struct TraceSummaryArgs {
     /// JSONL trace path.
-    #[arg(default_value = ".agentgrep/traces/commands.jsonl")]
+    #[arg(default_value = "~/.agentgrep/traces/commands.jsonl")]
     pub path: PathBuf,
     #[command(flatten)]
     pub output: CommonOutputArgs,
@@ -359,7 +359,7 @@ pub struct TraceSummaryArgs {
 #[derive(Debug, Args)]
 pub struct TraceReplayArgs {
     /// JSONL trace path.
-    #[arg(default_value = ".agentgrep/traces/commands.jsonl")]
+    #[arg(default_value = "~/.agentgrep/traces/commands.jsonl")]
     pub path: PathBuf,
     /// Repository or fixture root to replay commands in.
     #[arg(long, default_value = ".")]

@@ -159,7 +159,7 @@ pub fn resolve_trace_path(explicit: Option<PathBuf>) -> Option<PathBuf> {
     }
     match env::var("AGENTGREP_TRACE") {
         Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => {
-            Some(PathBuf::from(".agentgrep/traces/commands.jsonl"))
+            Some(default_trace_path("commands.jsonl"))
         }
         Ok(value)
             if value == "0"
@@ -249,10 +249,11 @@ fn execute_import_codex(args: TraceImportCodexArgs) -> Result<ExecResult> {
         });
     }
 
-    write_records(&args.out, &records)?;
+    let out_path = expand_home_path(&args.out);
+    write_records(&out_path, &records)?;
     let summary = TraceImportSummary {
         db: db.display().to_string(),
-        out: args.out.display().to_string(),
+        out: out_path.display().to_string(),
         scanned_rows: args.rows,
         imported_records: records.len(),
         unique_commands: unique.len(),
@@ -316,10 +317,11 @@ fn execute_import_claude(args: TraceImportClaudeArgs) -> Result<ExecResult> {
         });
     }
 
-    write_records(&args.out, &records)?;
+    let out_path = expand_home_path(&args.out);
+    write_records(&out_path, &records)?;
     let summary = TraceImportClaudeSummary {
         dir: dir.display().to_string(),
-        out: args.out.display().to_string(),
+        out: out_path.display().to_string(),
         scanned_rows,
         imported_records: records.len(),
         unique_commands: unique.len(),
@@ -356,8 +358,9 @@ fn execute_import_claude(args: TraceImportClaudeArgs) -> Result<ExecResult> {
 fn execute_summary(args: TraceSummaryArgs) -> Result<ExecResult> {
     let options: OutputOptions = (&args.output).into();
     let options = options.normalized();
-    let records = load_records(&args.path)?;
-    let summary = summarize_records(&args.path, &records, options.limit);
+    let path = expand_home_path(&args.path);
+    let records = load_records(&path)?;
+    let summary = summarize_records(&path, &records, options.limit);
 
     if options.json {
         return json_result("agentgrep trace summary", true, 0, &[], false, &summary);
@@ -413,7 +416,8 @@ fn execute_replay(args: TraceReplayArgs) -> Result<ExecResult> {
     let options: OutputOptions = (&args.output).into();
     let options = options.normalized();
     let modes = bench::parse_modes(&args.compare)?;
-    let records = load_records(&args.path)?;
+    let path = expand_home_path(&args.path);
+    let records = load_records(&path)?;
     let mut seen = HashSet::new();
     let mut commands = Vec::new();
     let mut skipped = Vec::new();
@@ -461,7 +465,7 @@ fn execute_replay(args: TraceReplayArgs) -> Result<ExecResult> {
     }
     .to_string();
     let replay = TraceReplaySummary {
-        path: args.path.display().to_string(),
+        path: path.display().to_string(),
         repo: args.repo.display().to_string(),
         commands: command_summaries,
         skipped,
@@ -1122,6 +1126,17 @@ fn expand_home(path: &str) -> PathBuf {
         return PathBuf::from(home).join(rest);
     }
     PathBuf::from(path)
+}
+
+fn expand_home_path(path: &Path) -> PathBuf {
+    expand_home(&path.display().to_string())
+}
+
+fn default_trace_path(file_name: &str) -> PathBuf {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".agentgrep/traces").join(file_name))
+        .unwrap_or_else(|| PathBuf::from(".agentgrep/traces").join(file_name))
 }
 
 fn path_starts_with(path: &Path, prefix: &Path) -> bool {

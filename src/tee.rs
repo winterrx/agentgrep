@@ -60,9 +60,10 @@ impl Drop for TeeDisableGuard {
 }
 
 fn tee_dir() -> PathBuf {
-    std::env::var_os("AGENTGREP_TEE_DIR")
+    let base = std::env::var_os("AGENTGREP_TEE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(".agentgrep/tee"))
+        .unwrap_or_else(default_tee_base_dir);
+    base.join(project_slug())
 }
 
 fn max_tee_files() -> usize {
@@ -130,6 +131,37 @@ fn sanitize(command: &str) -> String {
     }
 }
 
+fn default_tee_base_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".agentgrep/tee"))
+        .unwrap_or_else(|| PathBuf::from(".agentgrep/tee"))
+}
+
+fn project_slug() -> String {
+    project_root()
+        .or_else(|| std::env::current_dir().ok())
+        .and_then(|cwd| {
+            cwd.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .map(|name| sanitize(&name))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "unknown-project".to_string())
+}
+
+fn project_root() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 fn display_path(path: &Path) -> String {
     path.display().to_string()
 }
@@ -150,11 +182,56 @@ mod tests {
     }
 
     #[test]
+    fn default_tee_dir_is_user_level_and_project_scoped() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let repo = tmp.path().join("repo-name");
+        let subdir = repo.join("src");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&subdir).unwrap();
+        std::fs::write(repo.join(".git"), "gitdir: .git/worktrees/test\n").unwrap();
+        let old_home = std::env::var_os("HOME");
+        let old_tee_dir = std::env::var_os("AGENTGREP_TEE_DIR");
+        let old_cwd = std::env::current_dir().unwrap();
+        unsafe {
+            std::env::set_var("HOME", &home);
+            std::env::remove_var("AGENTGREP_TEE_DIR");
+        }
+        std::env::set_current_dir(&subdir).unwrap();
+
+        let hint = tee_raw_output("rg x", b"full output", b"", true).unwrap();
+
+        assert!(hint.contains(".agentgrep/tee/repo-name/"));
+        assert!(home.join(".agentgrep/tee/repo-name").is_dir());
+        assert!(!repo.join(".agentgrep").exists());
+        std::env::set_current_dir(old_cwd).unwrap();
+        unsafe {
+            restore_env("HOME", old_home);
+            restore_env("AGENTGREP_TEE_DIR", old_tee_dir);
+        }
+    }
+
+    #[test]
     fn truncates_tee_bytes() {
         let mut bytes = "abcdef".as_bytes().to_vec();
         truncate_bytes_at_char_boundary(&mut bytes, 3);
         let text = String::from_utf8(bytes).unwrap();
         assert!(text.starts_with("abc"));
         assert!(text.contains("truncated at 3 bytes"));
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    unsafe fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            unsafe {
+                std::env::set_var(name, value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var(name);
+            }
+        }
     }
 }

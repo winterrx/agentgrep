@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use anyhow::Result;
 use serde::Serialize;
 
@@ -33,7 +31,7 @@ pub fn execute_doctor(options: OutputOptions) -> Result<ExecResult> {
         ripgrep: tool_status("rg", "rg --version"),
         git: tool_status("git", "git --version"),
         sqlite3: tool_status("sqlite3", "sqlite3 --version"),
-        index_present: Path::new(".agentgrep/index.json").is_file(),
+        index_present: crate::index::user_index_path(&cwd).is_file(),
         status: "ok".to_string(),
     };
 
