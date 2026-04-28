@@ -624,6 +624,38 @@ fn listing_shims_preserve_shell_pipeline_streams() {
 }
 
 #[test]
+fn search_shims_preserve_shell_command_substitution_streams() {
+    if !has_command("rg") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("shims");
+    let dir_arg = dir.to_string_lossy().to_string();
+    let cwd = tmp.path().join("repo");
+    fs::create_dir_all(&cwd).unwrap();
+    let content = iter::repeat_n("needle in a haystack\n", 1200).collect::<String>();
+    fs::write(cwd.join("huge.txt"), content).unwrap();
+
+    let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
+    assert!(installed.status.success());
+
+    let path = format!("{}:{}", dir.display(), env::var("PATH").unwrap_or_default());
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("files=$(rg -l needle); printf '%s\\n' \"$files\"")
+        .current_dir(&cwd)
+        .env("PATH", &path)
+        .env("AGENTGREP_LIMIT", "2")
+        .output()
+        .expect("command substitution runs");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(!stdout.contains("agentgrep optimized:"), "{stdout}");
+    assert_eq!(stdout.trim(), "huge.txt");
+}
+
+#[test]
 fn missing_file_reads_bypass_active_shims_for_exact_errors() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("shims");
