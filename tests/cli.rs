@@ -1052,8 +1052,10 @@ fn gain_tracking_uses_sqlite_by_default_path_shape() {
     let stdout = String::from_utf8_lossy(&gain.stdout);
 
     assert!(gain.status.success(), "{stdout}");
-    assert!(stdout.contains("ledger:"), "{stdout}");
-    assert!(stdout.contains("records: 1"), "{stdout}");
+    assert!(stdout.contains("Ledger"), "{stdout}");
+    assert!(stdout.contains("Records      1"), "{stdout}");
+    assert!(stdout.contains("Top Commands"), "{stdout}");
+    assert!(stdout.contains("Projects"), "{stdout}");
     assert!(stdout.contains("printf hello"), "{stdout}");
 }
 

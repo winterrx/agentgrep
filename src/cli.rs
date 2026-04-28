@@ -351,29 +351,102 @@ fn execute_gain(args: GainArgs) -> Result<ExecResult> {
 
     let mut out = String::new();
     out.push_str("agentgrep gain\n");
-    out.push_str(&format!("ledger: {}\n", args.path.display()));
-    out.push_str(&format!("records: {}\n", summary.total_records));
+    out.push_str("==============\n");
+    out.push_str(&format!("Ledger       {}\n", args.path.display()));
     out.push_str(&format!(
-        "tokens: {} -> {} (saved {}, {:.1}%)\n",
-        summary.total_input_tokens,
-        summary.total_output_tokens,
-        summary.total_saved_tokens,
+        "Records      {}\n",
+        format_count(summary.total_records as i64)
+    ));
+    out.push_str(&format!(
+        "Tokens       {} -> {}\n",
+        format_count(summary.total_input_tokens as i64),
+        format_count(summary.total_output_tokens as i64)
+    ));
+    out.push_str(&format!(
+        "Saved        {} tokens ({:.1}%)\n",
+        format_count(summary.total_saved_tokens),
         summary.avg_savings_pct
     ));
-    out.push_str("by command:\n");
-    for group in summary.by_command.iter().take(options.limit) {
-        out.push_str(&format!(
-            "  {:>4} {:>8} saved {:>6.1}%  {}\n",
-            group.records, group.saved_tokens, group.avg_savings_pct, group.key
-        ));
-    }
-    out.push_str("by project:\n");
-    for group in summary.by_project.iter().take(options.limit) {
-        out.push_str(&format!(
-            "  {:>4} {:>8} saved {:>6.1}%  {}\n",
-            group.records, group.saved_tokens, group.avg_savings_pct, group.key
-        ));
-    }
+    out.push_str(&format!(
+        "Avg/command  {} tokens saved\n\n",
+        format_count(avg_saved_per_record(
+            summary.total_saved_tokens,
+            summary.total_records
+        ))
+    ));
+
+    render_gain_table(
+        &mut out,
+        "Top Commands",
+        "command",
+        &summary.by_command,
+        options.limit,
+    );
+    out.push('\n');
+    render_gain_table(
+        &mut out,
+        "Projects",
+        "project",
+        &summary.by_project,
+        options.limit,
+    );
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
+}
+
+fn render_gain_table(
+    out: &mut String,
+    title: &str,
+    key_label: &str,
+    groups: &[tracking::TrackingGroupSummary],
+    limit: usize,
+) {
+    out.push_str(title);
+    out.push('\n');
+    out.push_str(&format!(
+        "{:<4} {:>7} {:>12} {:>10}  {}\n",
+        "rank", "runs", "saved", "savings", key_label
+    ));
+    out.push_str(&format!(
+        "{:<4} {:>7} {:>12} {:>10}  {}\n",
+        "----", "-------", "------------", "----------", "----------------"
+    ));
+    for (idx, group) in groups.iter().take(limit).enumerate() {
+        out.push_str(&format!(
+            "{:<4} {:>7} {:>12} {:>9.1}%  {}\n",
+            idx + 1,
+            format_count(group.records as i64),
+            format_count(group.saved_tokens),
+            group.avg_savings_pct,
+            group.key
+        ));
+    }
+    if groups.is_empty() {
+        out.push_str("no tracking records yet\n");
+    }
+}
+
+fn avg_saved_per_record(saved_tokens: i64, records: usize) -> i64 {
+    if records == 0 {
+        0
+    } else {
+        (saved_tokens as f64 / records as f64).round() as i64
+    }
+}
+
+fn format_count(value: i64) -> String {
+    let negative = value < 0;
+    let digits = value.abs().to_string();
+    let mut formatted = String::new();
+    for (idx, ch) in digits.chars().rev().enumerate() {
+        if idx > 0 && idx % 3 == 0 {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+    let mut formatted: String = formatted.chars().rev().collect();
+    if negative {
+        formatted.insert(0, '-');
+    }
+    formatted
 }
