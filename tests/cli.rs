@@ -1210,6 +1210,102 @@ fn hooks_install_codex_writes_hooks_and_feature_flag() {
 }
 
 #[test]
+fn hooks_uninstall_claude_removes_only_agentgrep_hooks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let settings_path = tmp.path().join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::write(
+        &settings_path,
+        serde_json::json!({
+            "theme": "kept",
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            { "type": "command", "command": "/tmp/agentgrep hooks claude-pre-tool-use" },
+                            { "type": "command", "command": "/tmp/other-hook" }
+                        ]
+                    }
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let output = run_agentgrep(
+        tmp.path(),
+        &["hooks", "uninstall-claude", "--scope", "project"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("removed: 1"), "{stdout}");
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
+    assert_eq!(value["theme"], "kept");
+    assert_eq!(
+        value["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "/tmp/other-hook"
+    );
+}
+
+#[test]
+fn hooks_uninstall_codex_removes_only_agentgrep_hooks_and_keeps_feature_flag() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hooks_path = tmp.path().join(".codex/hooks.json");
+    let config_path = tmp.path().join(".codex/config.toml");
+    fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
+    fs::write(&config_path, "[features]\ncodex_hooks = true\n").unwrap();
+    fs::write(
+        &hooks_path,
+        serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "startup|resume",
+                        "hooks": [
+                            { "type": "command", "command": "/tmp/agentgrep hooks codex-session-start" },
+                            { "type": "command", "command": "/tmp/keep-session" }
+                        ]
+                    }
+                ],
+                "PreToolUse": [
+                    {
+                        "matcher": "^Bash$",
+                        "hooks": [
+                            { "type": "command", "command": "/tmp/agentgrep hooks codex-pre-tool-use" }
+                        ]
+                    }
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let output = run_agentgrep(
+        tmp.path(),
+        &["hooks", "uninstall-codex", "--scope", "project"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("removed: 2"), "{stdout}");
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(hooks_path).unwrap()).unwrap();
+    assert_eq!(
+        value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "/tmp/keep-session"
+    );
+    assert!(value["hooks"].get("PreToolUse").is_none());
+    assert!(
+        fs::read_to_string(config_path)
+            .unwrap()
+            .contains("codex_hooks = true")
+    );
+}
+
+#[test]
 fn claude_pre_tool_use_rewrites_safe_bash_and_preserves_fields() {
     let tmp = tempfile::tempdir().unwrap();
     let input = serde_json::json!({

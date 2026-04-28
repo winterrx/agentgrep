@@ -195,6 +195,10 @@ pub enum HooksCommands {
     InstallClaude(ClaudeHooksInstallArgs),
     /// Install Codex hooks for agentgrep session context and Bash observability.
     InstallCodex(CodexHooksInstallArgs),
+    /// Remove agentgrep Claude Code hooks without touching unrelated settings.
+    UninstallClaude(ClaudeHooksUninstallArgs),
+    /// Remove agentgrep Codex hooks without touching unrelated hook config.
+    UninstallCodex(CodexHooksUninstallArgs),
     /// Handle Claude Code PreToolUse hook input.
     #[command(hide = true)]
     ClaudePreToolUse,
@@ -224,6 +228,20 @@ pub struct CodexHooksInstallArgs {
     /// Agentgrep binary path to embed in hook commands. Defaults to the current executable.
     #[arg(long)]
     pub agentgrep: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct ClaudeHooksUninstallArgs {
+    /// Hook scope to clean.
+    #[arg(long, value_enum, default_value_t = ClaudeHookScope::Project)]
+    pub scope: ClaudeHookScope,
+}
+
+#[derive(Debug, Args)]
+pub struct CodexHooksUninstallArgs {
+    /// Hook scope to clean.
+    #[arg(long, value_enum, default_value_t = CodexHookScope::Project)]
+    pub scope: CodexHookScope,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

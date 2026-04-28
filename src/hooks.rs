@@ -7,8 +7,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use crate::cli::{
-    ClaudeHookScope, ClaudeHooksInstallArgs, CodexHookScope, CodexHooksInstallArgs, HooksArgs,
-    HooksCommands,
+    ClaudeHookScope, ClaudeHooksInstallArgs, ClaudeHooksUninstallArgs, CodexHookScope,
+    CodexHooksInstallArgs, CodexHooksUninstallArgs, HooksArgs, HooksCommands,
 };
 use crate::command::{GitCommand, ParsedCommand, parse_command};
 use crate::output::ExecResult;
@@ -20,6 +20,8 @@ pub fn execute_hooks(args: HooksArgs) -> Result<ExecResult> {
     match args.command {
         HooksCommands::InstallClaude(args) => install_claude(args),
         HooksCommands::InstallCodex(args) => install_codex(args),
+        HooksCommands::UninstallClaude(args) => uninstall_claude(args),
+        HooksCommands::UninstallCodex(args) => uninstall_codex(args),
         HooksCommands::ClaudePreToolUse => handle_claude_pre_tool_use(),
         HooksCommands::CodexPreToolUse => handle_codex_pre_tool_use(),
         HooksCommands::CodexSessionStart => handle_codex_session_start(),
@@ -82,6 +84,44 @@ fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
     out.push_str(&format!("hooks: {}\n", hooks_path.display()));
     out.push_str(&format!("config: {}\n", config_path.display()));
     out.push_str("behavior: adds agentgrep context; Codex currently does not support PreToolUse updatedInput rewrites\n");
+    out.push_str("Exit code: 0\n");
+    Ok(ExecResult::success(out))
+}
+
+fn uninstall_claude(args: ClaudeHooksUninstallArgs) -> Result<ExecResult> {
+    let settings_path = claude_settings_path(args.scope)?;
+    let removed = remove_json_hooks_by_command_fragments(
+        &settings_path,
+        &["agentgrep hooks claude-pre-tool-use"],
+    )?;
+
+    let mut out = String::new();
+    out.push_str("agentgrep hooks uninstall-claude\n");
+    out.push_str(&format!("scope: {:?}\n", args.scope).to_lowercase());
+    out.push_str(&format!("settings: {}\n", settings_path.display()));
+    out.push_str(&format!("removed: {removed}\n"));
+    out.push_str("preserved: unrelated Claude settings and hooks\n");
+    out.push_str("Exit code: 0\n");
+    Ok(ExecResult::success(out))
+}
+
+fn uninstall_codex(args: CodexHooksUninstallArgs) -> Result<ExecResult> {
+    let dir = codex_config_dir(args.scope)?;
+    let hooks_path = dir.join("hooks.json");
+    let removed = remove_json_hooks_by_command_fragments(
+        &hooks_path,
+        &[
+            "agentgrep hooks codex-pre-tool-use",
+            "agentgrep hooks codex-session-start",
+        ],
+    )?;
+
+    let mut out = String::new();
+    out.push_str("agentgrep hooks uninstall-codex\n");
+    out.push_str(&format!("scope: {:?}\n", args.scope).to_lowercase());
+    out.push_str(&format!("hooks: {}\n", hooks_path.display()));
+    out.push_str(&format!("removed: {removed}\n"));
+    out.push_str("preserved: unrelated Codex hooks and config.toml feature flags\n");
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
 }
@@ -270,6 +310,60 @@ fn json_hook_command_exists(groups: &[Value], command: &str) -> bool {
             })
             .unwrap_or(false)
     })
+}
+
+fn remove_json_hooks_by_command_fragments(path: &Path, fragments: &[&str]) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    if content.trim().is_empty() {
+        return Ok(0);
+    }
+    let mut root: Value = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let mut removed = 0;
+    let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(0);
+    };
+
+    let events: Vec<String> = hooks.keys().cloned().collect();
+    for event in events {
+        let Some(groups) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for group in groups.iter_mut() {
+            let Some(handlers) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let before = handlers.len();
+            handlers.retain(|handler| {
+                let command = handler.get("command").and_then(Value::as_str);
+                !command
+                    .map(|command| fragments.iter().any(|fragment| command.contains(fragment)))
+                    .unwrap_or(false)
+            });
+            removed += before.saturating_sub(handlers.len());
+        }
+        groups.retain(|group| {
+            group
+                .get("hooks")
+                .and_then(Value::as_array)
+                .map(|handlers| !handlers.is_empty())
+                .unwrap_or(true)
+        });
+    }
+    hooks.retain(|_, value| {
+        value
+            .as_array()
+            .map(|groups| !groups.is_empty())
+            .unwrap_or(true)
+    });
+
+    fs::write(path, format!("{}\n", serde_json::to_string_pretty(&root)?))
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(removed)
 }
 
 fn ensure_object_field<'a>(
