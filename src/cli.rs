@@ -270,7 +270,7 @@ pub enum ShimsCommands {
 #[derive(Debug, Args)]
 pub struct ShimsInstallArgs {
     /// Directory to write shims into. Put this directory before the real tools on PATH.
-    #[arg(long, default_value = "~/.local/bin/agentgrep-shims")]
+    #[arg(long, default_value = "~/.local/bin")]
     pub dir: PathBuf,
     /// Agentgrep binary path to embed in wrappers. Defaults to the current executable.
     #[arg(long)]
@@ -283,7 +283,7 @@ pub struct ShimsInstallArgs {
 #[derive(Debug, Args)]
 pub struct ShimsDirArgs {
     /// Directory containing agentgrep shims.
-    #[arg(long, default_value = "~/.local/bin/agentgrep-shims")]
+    #[arg(long, default_value = "~/.local/bin")]
     pub dir: PathBuf,
 }
 

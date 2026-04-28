@@ -423,6 +423,27 @@ fn shims_install_status_and_uninstall() {
     assert!(!dir.join("rg").exists());
 }
 
+#[test]
+fn shims_default_to_user_local_bin() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let home_arg = home.to_string_lossy().to_string();
+
+    let installed =
+        run_agentgrep_with_env(tmp.path(), &["shims", "install"], &[("HOME", &home_arg)]);
+    let install_stdout = String::from_utf8_lossy(&installed.stdout);
+    assert!(installed.status.success(), "{install_stdout}");
+    assert!(install_stdout.contains(&format!("dir: {}/.local/bin", home.display())));
+    assert!(home.join(".local/bin/rg").is_file());
+
+    let status = run_agentgrep_with_env(tmp.path(), &["shims", "status"], &[("HOME", &home_arg)]);
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(status.status.success(), "{status_stdout}");
+    assert!(status_stdout.contains("rg: installed"));
+    assert!(status_stdout.contains("installed: 28/28"));
+}
+
 #[cfg(unix)]
 #[test]
 fn shims_status_reports_shadowed_path_order() {

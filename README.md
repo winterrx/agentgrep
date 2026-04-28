@@ -14,15 +14,15 @@ cargo build --release
 Install command shims when you want familiar commands to proxy through `agentgrep` without changing agent workflows:
 
 ```bash
-agentgrep shims install --dir ~/.local/bin/agentgrep-shims
-export PATH="$HOME/.local/bin/agentgrep-shims:$PATH"
-agentgrep shims status --dir ~/.local/bin/agentgrep-shims
+agentgrep shims install
+export PATH="$HOME/.local/bin:$PATH"
+agentgrep shims status
 ```
 
 Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, `tree`, `cargo`, `pytest`, `py.test`, `python`, `python3`, `go`, `npm`, `pnpm`, `yarn`, `npx`, `vitest`, `jest`, `playwright`, `ruff`, `mypy`, and `deps`. `agentgrep shims status` reports when the shim directory is present but shadowed by earlier system paths. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, pass piped stdin directly to the real tool, and decline optimization when a parent shell command contains a pipeline or redirection. Remove them with:
 
 ```bash
-agentgrep shims uninstall --dir ~/.local/bin/agentgrep-shims
+agentgrep shims uninstall
 ```
 
 ## Agent hooks
