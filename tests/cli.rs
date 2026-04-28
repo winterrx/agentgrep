@@ -1169,6 +1169,9 @@ fn hooks_install_claude_writes_project_settings() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("Action    added"), "{stdout}");
+    assert!(stdout.contains("Installed handler"), "{stdout}");
+    assert!(stdout.contains("Undo"), "{stdout}");
     let settings = fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&settings).unwrap();
     let hooks = value["hooks"]["PreToolUse"].as_array().unwrap();
@@ -1195,6 +1198,15 @@ fn hooks_install_codex_writes_hooks_and_feature_flag() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
+    assert!(
+        stdout.contains("Feature   created codex_hooks = true"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Installed handlers"), "{stdout}");
+    assert!(
+        stdout.contains("Current Codex hooks do not apply"),
+        "{stdout}"
+    );
     let hooks = fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&hooks).unwrap();
     assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "^Bash$");
@@ -1240,7 +1252,12 @@ fn hooks_uninstall_claude_removes_only_agentgrep_hooks() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("removed: 1"), "{stdout}");
+    assert!(stdout.contains("Removed    1 handler"), "{stdout}");
+    assert!(
+        stdout.contains("Pruned     0 empty groups, 0 empty events"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Preserved"), "{stdout}");
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(settings_path).unwrap()).unwrap();
     assert_eq!(value["theme"], "kept");
@@ -1290,7 +1307,12 @@ fn hooks_uninstall_codex_removes_only_agentgrep_hooks_and_keeps_feature_flag() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("removed: 2"), "{stdout}");
+    assert!(stdout.contains("Removed    2 handlers"), "{stdout}");
+    assert!(
+        stdout.contains("Pruned     1 empty group, 1 empty event"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("config.toml was not changed"), "{stdout}");
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(hooks_path).unwrap()).unwrap();
     assert_eq!(

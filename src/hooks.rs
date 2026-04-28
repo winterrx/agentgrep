@@ -16,6 +16,27 @@ use crate::output::ExecResult;
 const CLAUDE_HOOK_STATUS: &str = "Routing safe Bash through agentgrep";
 const CODEX_HOOK_STATUS: &str = "Loading agentgrep shell proxy";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookWriteAction {
+    Added,
+    AlreadyPresent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigWriteAction {
+    Created,
+    Enabled,
+    AlreadyEnabled,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct HookRemovalSummary {
+    removed_handlers: usize,
+    pruned_groups: usize,
+    pruned_events: usize,
+    file_missing: bool,
+}
+
 pub fn execute_hooks(args: HooksArgs) -> Result<ExecResult> {
     match args.command {
         HooksCommands::InstallClaude(args) => install_claude(args),
@@ -32,7 +53,7 @@ fn install_claude(args: ClaudeHooksInstallArgs) -> Result<ExecResult> {
     let agentgrep = resolve_agentgrep(args.agentgrep)?;
     let settings_path = claude_settings_path(args.scope)?;
     let command = hook_command(&agentgrep, "claude-pre-tool-use")?;
-    upsert_json_hook(
+    let action = upsert_json_hook(
         &settings_path,
         "PreToolUse",
         Some("Bash"),
@@ -43,10 +64,26 @@ fn install_claude(args: ClaudeHooksInstallArgs) -> Result<ExecResult> {
 
     let mut out = String::new();
     out.push_str("agentgrep hooks install-claude\n");
-    out.push_str(&format!("scope: {:?}\n", args.scope).to_lowercase());
-    out.push_str(&format!("settings: {}\n", settings_path.display()));
-    out.push_str(&format!("handler: {command}\n"));
-    out.push_str("behavior: rewrites safe Bash tool calls to agentgrep run\n");
+    out.push_str("===============================\n");
+    out.push_str(&format!("Scope     {}\n", claude_scope_arg(args.scope)));
+    out.push_str(&format!("File      {}\n", settings_path.display()));
+    out.push_str(&format!(
+        "Action    {}\n\n",
+        hook_write_action_label(action)
+    ));
+    out.push_str("Installed handler\n");
+    out.push_str("  Event    PreToolUse\n");
+    out.push_str("  Matcher  Bash\n");
+    out.push_str(&format!("  Command  {command}\n"));
+    out.push_str("  Timeout  5s\n\n");
+    out.push_str("Effect\n");
+    out.push_str("  Claude will rewrite safe Bash tool calls to agentgrep run before execution.\n");
+    out.push_str("  Mutating git, unsupported commands, and shell control/redirection are left unchanged.\n\n");
+    out.push_str("Undo\n");
+    out.push_str(&format!(
+        "  agentgrep hooks uninstall-claude --scope {}\n\n",
+        claude_scope_arg(args.scope)
+    ));
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
 }
@@ -60,7 +97,7 @@ fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
     let pre_tool_command = hook_command(&agentgrep, "codex-pre-tool-use")?;
     let session_command = hook_command(&agentgrep, "codex-session-start")?;
 
-    upsert_json_hook(
+    let pre_tool_action = upsert_json_hook(
         &hooks_path,
         "PreToolUse",
         Some("^Bash$"),
@@ -68,7 +105,7 @@ fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
         5,
         "Checking agentgrep proxy",
     )?;
-    upsert_json_hook(
+    let session_action = upsert_json_hook(
         &hooks_path,
         "SessionStart",
         Some("startup|resume|clear"),
@@ -76,31 +113,63 @@ fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
         5,
         CODEX_HOOK_STATUS,
     )?;
-    enable_codex_hooks_feature(&config_path)?;
+    let feature_action = enable_codex_hooks_feature(&config_path)?;
 
     let mut out = String::new();
     out.push_str("agentgrep hooks install-codex\n");
-    out.push_str(&format!("scope: {:?}\n", args.scope).to_lowercase());
-    out.push_str(&format!("hooks: {}\n", hooks_path.display()));
-    out.push_str(&format!("config: {}\n", config_path.display()));
-    out.push_str("behavior: adds agentgrep context; Codex currently does not support PreToolUse updatedInput rewrites\n");
+    out.push_str("==============================\n");
+    out.push_str(&format!("Scope     {}\n", codex_scope_arg(args.scope)));
+    out.push_str(&format!("Hooks     {}\n", hooks_path.display()));
+    out.push_str(&format!("Config    {}\n", config_path.display()));
+    out.push_str(&format!(
+        "Feature   {}\n\n",
+        config_write_action_label(feature_action)
+    ));
+    out.push_str("Installed handlers\n");
+    out.push_str(&format!(
+        "  {}  PreToolUse    ^Bash$              {}\n",
+        hook_write_action_label(pre_tool_action),
+        pre_tool_command
+    ));
+    out.push_str(&format!(
+        "  {}  SessionStart  startup|resume|clear  {}\n\n",
+        hook_write_action_label(session_action),
+        session_command
+    ));
+    out.push_str("Effect\n");
+    out.push_str("  Codex gets agentgrep startup context and Bash hook observability.\n");
+    out.push_str("  Current Codex hooks do not apply PreToolUse updatedInput, so transparent proxying still comes from shims/PATH or explicit agentgrep run.\n\n");
+    out.push_str("Undo\n");
+    out.push_str(&format!(
+        "  agentgrep hooks uninstall-codex --scope {}\n\n",
+        codex_scope_arg(args.scope)
+    ));
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
 }
 
 fn uninstall_claude(args: ClaudeHooksUninstallArgs) -> Result<ExecResult> {
     let settings_path = claude_settings_path(args.scope)?;
-    let removed = remove_json_hooks_by_command_fragments(
+    let summary = remove_json_hooks_by_command_fragments(
         &settings_path,
         &["agentgrep hooks claude-pre-tool-use"],
     )?;
 
     let mut out = String::new();
     out.push_str("agentgrep hooks uninstall-claude\n");
-    out.push_str(&format!("scope: {:?}\n", args.scope).to_lowercase());
-    out.push_str(&format!("settings: {}\n", settings_path.display()));
-    out.push_str(&format!("removed: {removed}\n"));
-    out.push_str("preserved: unrelated Claude settings and hooks\n");
+    out.push_str("=================================\n");
+    out.push_str(&format!("Scope      {}\n", claude_scope_arg(args.scope)));
+    out.push_str(&format!("File       {}\n", settings_path.display()));
+    render_removal_summary(&mut out, &summary);
+    out.push_str("\nPreserved\n");
+    out.push_str(
+        "  Unrelated Claude settings, hooks, matcher groups, and handlers were left in place.\n\n",
+    );
+    out.push_str("Reinstall\n");
+    out.push_str(&format!(
+        "  agentgrep hooks install-claude --scope {}\n\n",
+        claude_scope_arg(args.scope)
+    ));
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
 }
@@ -108,7 +177,7 @@ fn uninstall_claude(args: ClaudeHooksUninstallArgs) -> Result<ExecResult> {
 fn uninstall_codex(args: CodexHooksUninstallArgs) -> Result<ExecResult> {
     let dir = codex_config_dir(args.scope)?;
     let hooks_path = dir.join("hooks.json");
-    let removed = remove_json_hooks_by_command_fragments(
+    let summary = remove_json_hooks_by_command_fragments(
         &hooks_path,
         &[
             "agentgrep hooks codex-pre-tool-use",
@@ -118,10 +187,20 @@ fn uninstall_codex(args: CodexHooksUninstallArgs) -> Result<ExecResult> {
 
     let mut out = String::new();
     out.push_str("agentgrep hooks uninstall-codex\n");
-    out.push_str(&format!("scope: {:?}\n", args.scope).to_lowercase());
-    out.push_str(&format!("hooks: {}\n", hooks_path.display()));
-    out.push_str(&format!("removed: {removed}\n"));
-    out.push_str("preserved: unrelated Codex hooks and config.toml feature flags\n");
+    out.push_str("================================\n");
+    out.push_str(&format!("Scope      {}\n", codex_scope_arg(args.scope)));
+    out.push_str(&format!("File       {}\n", hooks_path.display()));
+    render_removal_summary(&mut out, &summary);
+    out.push_str("\nPreserved\n");
+    out.push_str("  Unrelated Codex hooks were left in place.\n");
+    out.push_str(
+        "  config.toml was not changed; codex_hooks may still be true for other hooks.\n\n",
+    );
+    out.push_str("Reinstall\n");
+    out.push_str(&format!(
+        "  agentgrep hooks install-codex --scope {}\n\n",
+        codex_scope_arg(args.scope)
+    ));
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
 }
@@ -253,7 +332,7 @@ fn upsert_json_hook(
     command: &str,
     timeout: u64,
     status_message: &str,
-) -> Result<()> {
+) -> Result<HookWriteAction> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -277,7 +356,11 @@ fn upsert_json_hook(
     {
         let hooks = ensure_object_field(&mut root, "hooks")?;
         let groups = ensure_array_field(hooks, event)?;
-        if !json_hook_command_exists(groups, command) {
+        if json_hook_command_exists(groups, command) {
+            fs::write(path, format!("{}\n", serde_json::to_string_pretty(&root)?))
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            return Ok(HookWriteAction::AlreadyPresent);
+        } else {
             let mut group = json!({
                 "hooks": [{
                     "type": "command",
@@ -295,7 +378,7 @@ fn upsert_json_hook(
 
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(&root)?))
         .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
+    Ok(HookWriteAction::Added)
 }
 
 fn json_hook_command_exists(groups: &[Value], command: &str) -> bool {
@@ -312,20 +395,81 @@ fn json_hook_command_exists(groups: &[Value], command: &str) -> bool {
     })
 }
 
-fn remove_json_hooks_by_command_fragments(path: &Path, fragments: &[&str]) -> Result<usize> {
+fn hook_write_action_label(action: HookWriteAction) -> &'static str {
+    match action {
+        HookWriteAction::Added => "added",
+        HookWriteAction::AlreadyPresent => "already present",
+    }
+}
+
+fn config_write_action_label(action: ConfigWriteAction) -> &'static str {
+    match action {
+        ConfigWriteAction::Created => "created codex_hooks = true",
+        ConfigWriteAction::Enabled => "enabled codex_hooks = true",
+        ConfigWriteAction::AlreadyEnabled => "already enabled",
+    }
+}
+
+fn render_removal_summary(out: &mut String, summary: &HookRemovalSummary) {
+    if summary.file_missing {
+        out.push_str("Status     no config file found\n");
+        out.push_str("Removed    0 handlers\n");
+        return;
+    }
+    out.push_str("Status     cleaned\n");
+    out.push_str(&format!(
+        "Removed    {} handler{}\n",
+        summary.removed_handlers,
+        plural(summary.removed_handlers)
+    ));
+    out.push_str(&format!(
+        "Pruned     {} empty group{}, {} empty event{}\n",
+        summary.pruned_groups,
+        plural(summary.pruned_groups),
+        summary.pruned_events,
+        plural(summary.pruned_events)
+    ));
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
+fn claude_scope_arg(scope: ClaudeHookScope) -> &'static str {
+    match scope {
+        ClaudeHookScope::User => "user",
+        ClaudeHookScope::Project => "project",
+        ClaudeHookScope::Local => "local",
+    }
+}
+
+fn codex_scope_arg(scope: CodexHookScope) -> &'static str {
+    match scope {
+        CodexHookScope::User => "user",
+        CodexHookScope::Project => "project",
+    }
+}
+
+fn remove_json_hooks_by_command_fragments(
+    path: &Path,
+    fragments: &[&str],
+) -> Result<HookRemovalSummary> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(HookRemovalSummary {
+            file_missing: true,
+            ..HookRemovalSummary::default()
+        });
     }
     let content =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     if content.trim().is_empty() {
-        return Ok(0);
+        return Ok(HookRemovalSummary::default());
     }
     let mut root: Value = serde_json::from_str(&content)
         .with_context(|| format!("failed to parse {}", path.display()))?;
-    let mut removed = 0;
+    let mut summary = HookRemovalSummary::default();
     let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
-        return Ok(0);
+        return Ok(summary);
     };
 
     let events: Vec<String> = hooks.keys().cloned().collect();
@@ -344,8 +488,9 @@ fn remove_json_hooks_by_command_fragments(path: &Path, fragments: &[&str]) -> Re
                     .map(|command| fragments.iter().any(|fragment| command.contains(fragment)))
                     .unwrap_or(false)
             });
-            removed += before.saturating_sub(handlers.len());
+            summary.removed_handlers += before.saturating_sub(handlers.len());
         }
+        let before_groups = groups.len();
         groups.retain(|group| {
             group
                 .get("hooks")
@@ -353,17 +498,20 @@ fn remove_json_hooks_by_command_fragments(path: &Path, fragments: &[&str]) -> Re
                 .map(|handlers| !handlers.is_empty())
                 .unwrap_or(true)
         });
+        summary.pruned_groups += before_groups.saturating_sub(groups.len());
     }
+    let before_events = hooks.len();
     hooks.retain(|_, value| {
         value
             .as_array()
             .map(|groups| !groups.is_empty())
             .unwrap_or(true)
     });
+    summary.pruned_events += before_events.saturating_sub(hooks.len());
 
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(&root)?))
         .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(removed)
+    Ok(summary)
 }
 
 fn ensure_object_field<'a>(
@@ -391,8 +539,9 @@ fn ensure_array_field<'a>(
         .ok_or_else(|| anyhow!("{field} must be a JSON array"))
 }
 
-fn enable_codex_hooks_feature(path: &Path) -> Result<()> {
-    let content = if path.exists() {
+fn enable_codex_hooks_feature(path: &Path) -> Result<ConfigWriteAction> {
+    let existed = path.exists();
+    let content = if existed {
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?
     } else {
         String::new()
@@ -402,10 +551,13 @@ fn enable_codex_hooks_feature(path: &Path) -> Result<()> {
         .iter()
         .position(|line| line.trim_start().starts_with("codex_hooks"))
     {
+        if lines[index].trim() == "codex_hooks = true" {
+            return Ok(ConfigWriteAction::AlreadyEnabled);
+        }
         lines[index] = "codex_hooks = true".to_string();
         fs::write(path, format!("{}\n", lines.join("\n")))
             .with_context(|| format!("failed to write {}", path.display()))?;
-        return Ok(());
+        return Ok(ConfigWriteAction::Enabled);
     }
 
     if let Some(index) = lines.iter().position(|line| line.trim() == "[features]") {
@@ -418,7 +570,12 @@ fn enable_codex_hooks_feature(path: &Path) -> Result<()> {
         lines.push("codex_hooks = true".to_string());
     }
     fs::write(path, format!("{}\n", lines.join("\n")))
-        .with_context(|| format!("failed to write {}", path.display()))
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(if existed {
+        ConfigWriteAction::Enabled
+    } else {
+        ConfigWriteAction::Created
+    })
 }
 
 fn resolve_agentgrep(path: Option<PathBuf>) -> Result<PathBuf> {
@@ -519,8 +676,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
         fs::write(&path, "[features]\nfoo = true\n").unwrap();
-        enable_codex_hooks_feature(&path).unwrap();
+        let action = enable_codex_hooks_feature(&path).unwrap();
         let content = fs::read_to_string(path).unwrap();
+        assert_eq!(action, ConfigWriteAction::Enabled);
         assert!(content.contains("[features]\ncodex_hooks = true\nfoo = true"));
     }
 
@@ -529,8 +687,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.toml");
         fs::write(&path, "[features]\ncodex_hooks = false\n").unwrap();
-        enable_codex_hooks_feature(&path).unwrap();
+        let action = enable_codex_hooks_feature(&path).unwrap();
         let content = fs::read_to_string(path).unwrap();
+        assert_eq!(action, ConfigWriteAction::Enabled);
         assert_eq!(content.matches("codex_hooks").count(), 1);
         assert!(content.contains("codex_hooks = true"));
     }
@@ -539,7 +698,7 @@ mod tests {
     fn upsert_json_hook_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("settings.json");
-        upsert_json_hook(
+        let first = upsert_json_hook(
             &path,
             "PreToolUse",
             Some("Bash"),
@@ -548,7 +707,7 @@ mod tests {
             "status",
         )
         .unwrap();
-        upsert_json_hook(
+        let second = upsert_json_hook(
             &path,
             "PreToolUse",
             Some("Bash"),
@@ -559,6 +718,8 @@ mod tests {
         .unwrap();
         let value: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         let groups = value["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(first, HookWriteAction::Added);
+        assert_eq!(second, HookWriteAction::AlreadyPresent);
         assert_eq!(groups.len(), 1);
     }
 }
