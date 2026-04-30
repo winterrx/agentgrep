@@ -43,7 +43,7 @@ agentgrep hooks uninstall-codex --scope project
 
 Claude Code hooks rewrite safe `Bash` tool calls such as `rg stripe`, `git status`, and `cargo check` to `agentgrep run '...'` before execution, while preserving fields like descriptions and timeouts. Unsupported commands, shell control/redirection, and mutating `git` commands are left alone.
 
-Codex hooks enable `[features].codex_hooks`, install project or user `hooks.json`, and add startup context telling Codex how to use agentgrep. Current Codex hooks do not yet apply `PreToolUse.updatedInput`, so transparent Codex command proxying still comes from shims or explicit `agentgrep run "..."`. The Codex hook layer is in place for session context and future rewrite support without changing the installed config shape later.
+Codex hooks enable `[features].codex_hooks`, install project or user `hooks.json`, and add startup context telling Codex how to use agentgrep. Current Codex hooks do not yet apply `PreToolUse.updatedInput`, so transparent Codex command proxying comes from shims or explicit `agentgrep run "..."`. Agentgrep does not install a Codex `PreToolUse` hook by default because it would fire on every Bash call without being able to rewrite it.
 
 Use `--scope user` to write `~/.claude/settings.json` or `~/.codex/*`. Claude also supports `--scope local` for `.claude/settings.local.json`.
 

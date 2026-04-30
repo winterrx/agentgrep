@@ -94,16 +94,11 @@ fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let hooks_path = dir.join("hooks.json");
     let config_path = dir.join("config.toml");
-    let pre_tool_command = hook_command(&agentgrep, "codex-pre-tool-use")?;
     let session_command = hook_command(&agentgrep, "codex-session-start")?;
 
-    let pre_tool_action = upsert_json_hook(
+    let stale_pre_tool_summary = remove_json_hooks_by_command_fragments(
         &hooks_path,
-        "PreToolUse",
-        Some("^Bash$"),
-        &pre_tool_command,
-        5,
-        "Checking agentgrep proxy",
+        &["agentgrep hooks codex-pre-tool-use"],
     )?;
     let session_action = upsert_json_hook(
         &hooks_path,
@@ -125,20 +120,22 @@ fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
         "Feature   {}\n\n",
         config_write_action_label(feature_action)
     ));
-    out.push_str("Installed handlers\n");
-    out.push_str(&format!(
-        "  {}  PreToolUse    ^Bash$              {}\n",
-        hook_write_action_label(pre_tool_action),
-        pre_tool_command
-    ));
+    out.push_str("Installed handler\n");
     out.push_str(&format!(
         "  {}  SessionStart  startup|resume|clear  {}\n\n",
         hook_write_action_label(session_action),
         session_command
     ));
+    if stale_pre_tool_summary.removed_handlers > 0 {
+        out.push_str("Cleaned stale handler\n");
+        out.push_str(&format!(
+            "  Removed {} Codex PreToolUse handler(s) that only added per-Bash overhead.\n\n",
+            stale_pre_tool_summary.removed_handlers
+        ));
+    }
     out.push_str("Effect\n");
-    out.push_str("  Codex gets agentgrep startup context and Bash hook observability.\n");
-    out.push_str("  Current Codex hooks do not apply PreToolUse updatedInput, so transparent proxying still comes from shims/PATH or explicit agentgrep run.\n\n");
+    out.push_str("  Codex gets agentgrep startup context once per session.\n");
+    out.push_str("  Transparent proxying comes from shims/PATH or explicit agentgrep run; no per-Bash Codex hook is installed because Codex cannot rewrite Bash input yet.\n\n");
     out.push_str("Undo\n");
     out.push_str(&format!(
         "  agentgrep hooks uninstall-codex --scope {}\n\n",

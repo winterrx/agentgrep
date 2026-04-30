@@ -1388,14 +1388,14 @@ fn hooks_install_codex_writes_hooks_and_feature_flag() {
         stdout.contains("Feature   created codex_hooks = true"),
         "{stdout}"
     );
-    assert!(stdout.contains("Installed handlers"), "{stdout}");
+    assert!(stdout.contains("Installed handler"), "{stdout}");
     assert!(
-        stdout.contains("Current Codex hooks do not apply"),
+        stdout.contains("no per-Bash Codex hook is installed"),
         "{stdout}"
     );
     let hooks = fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&hooks).unwrap();
-    assert_eq!(value["hooks"]["PreToolUse"][0]["matcher"], "^Bash$");
+    assert!(value["hooks"].get("PreToolUse").is_none());
     assert_eq!(
         value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
         "/tmp/agentgrep hooks codex-session-start"
@@ -1404,6 +1404,56 @@ fn hooks_install_codex_writes_hooks_and_feature_flag() {
     assert!(
         config.contains("[features]\ncodex_hooks = true"),
         "{config}"
+    );
+}
+
+#[test]
+fn hooks_install_codex_removes_stale_pre_tool_hook() {
+    let tmp = tempfile::tempdir().unwrap();
+    let hooks_path = tmp.path().join(".codex/hooks.json");
+    fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
+    fs::write(
+        &hooks_path,
+        serde_json::json!({
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "^Bash$",
+                        "hooks": [
+                            { "type": "command", "command": "/tmp/agentgrep hooks codex-pre-tool-use" },
+                            { "type": "command", "command": "/tmp/keep-pre-tool" }
+                        ]
+                    }
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let output = run_agentgrep(
+        tmp.path(),
+        &[
+            "hooks",
+            "install-codex",
+            "--scope",
+            "project",
+            "--agentgrep",
+            "/tmp/agentgrep",
+        ],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("Cleaned stale handler"), "{stdout}");
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(hooks_path).unwrap()).unwrap();
+    assert_eq!(
+        value["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+        "/tmp/keep-pre-tool"
+    );
+    assert_eq!(
+        value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "/tmp/agentgrep hooks codex-session-start"
     );
 }
 
