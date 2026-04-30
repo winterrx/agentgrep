@@ -14,19 +14,11 @@ use crate::command::{GitCommand, ParsedCommand, parse_command};
 use crate::output::ExecResult;
 
 const CLAUDE_HOOK_STATUS: &str = "Routing safe Bash through agentgrep";
-const CODEX_HOOK_STATUS: &str = "Loading agentgrep shell proxy";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HookWriteAction {
     Added,
     AlreadyPresent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigWriteAction {
-    Created,
-    Enabled,
-    AlreadyEnabled,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -89,26 +81,16 @@ fn install_claude(args: ClaudeHooksInstallArgs) -> Result<ExecResult> {
 }
 
 fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
-    let agentgrep = resolve_agentgrep(args.agentgrep)?;
     let dir = codex_config_dir(args.scope)?;
-    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     let hooks_path = dir.join("hooks.json");
     let config_path = dir.join("config.toml");
-    let session_command = hook_command(&agentgrep, "codex-session-start")?;
-
-    let stale_pre_tool_summary = remove_json_hooks_by_command_fragments(
+    let summary = remove_json_hooks_by_command_fragments(
         &hooks_path,
-        &["agentgrep hooks codex-pre-tool-use"],
+        &[
+            "agentgrep hooks codex-pre-tool-use",
+            "agentgrep hooks codex-session-start",
+        ],
     )?;
-    let session_action = upsert_json_hook(
-        &hooks_path,
-        "SessionStart",
-        Some("startup|resume|clear"),
-        &session_command,
-        5,
-        CODEX_HOOK_STATUS,
-    )?;
-    let feature_action = enable_codex_hooks_feature(&config_path)?;
 
     let mut out = String::new();
     out.push_str("agentgrep hooks install-codex\n");
@@ -116,31 +98,17 @@ fn install_codex(args: CodexHooksInstallArgs) -> Result<ExecResult> {
     out.push_str(&format!("Scope     {}\n", codex_scope_arg(args.scope)));
     out.push_str(&format!("Hooks     {}\n", hooks_path.display()));
     out.push_str(&format!("Config    {}\n", config_path.display()));
-    out.push_str(&format!(
-        "Feature   {}\n\n",
-        config_write_action_label(feature_action)
-    ));
-    out.push_str("Installed handler\n");
-    out.push_str(&format!(
-        "  {}  SessionStart  startup|resume|clear  {}\n\n",
-        hook_write_action_label(session_action),
-        session_command
-    ));
-    if stale_pre_tool_summary.removed_handlers > 0 {
-        out.push_str("Cleaned stale handler\n");
-        out.push_str(&format!(
-            "  Removed {} Codex PreToolUse handler(s) that only added per-Bash overhead.\n\n",
-            stale_pre_tool_summary.removed_handlers
-        ));
-    }
+    out.push_str("Feature   unchanged\n\n");
+    out.push_str("Installed handlers\n");
+    out.push_str("  none\n\n");
+    out.push_str("Cleaned agentgrep Codex hooks\n");
+    render_removal_summary(&mut out, &summary);
+    out.push('\n');
     out.push_str("Effect\n");
-    out.push_str("  Codex gets agentgrep startup context once per session.\n");
-    out.push_str("  Transparent proxying comes from shims/PATH or explicit agentgrep run; no per-Bash Codex hook is installed because Codex cannot rewrite Bash input yet.\n\n");
+    out.push_str("  Codex hooks are not installed because they cannot rewrite Bash input yet.\n");
+    out.push_str("  Transparent proxying comes from shims/PATH or explicit agentgrep run.\n\n");
     out.push_str("Undo\n");
-    out.push_str(&format!(
-        "  agentgrep hooks uninstall-codex --scope {}\n\n",
-        codex_scope_arg(args.scope)
-    ));
+    out.push_str("  No Codex hook layer is installed. Use agentgrep shims uninstall to remove PATH shims.\n\n");
     out.push_str("Exit code: 0\n");
     Ok(ExecResult::success(out))
 }
@@ -399,14 +367,6 @@ fn hook_write_action_label(action: HookWriteAction) -> &'static str {
     }
 }
 
-fn config_write_action_label(action: ConfigWriteAction) -> &'static str {
-    match action {
-        ConfigWriteAction::Created => "created codex_hooks = true",
-        ConfigWriteAction::Enabled => "enabled codex_hooks = true",
-        ConfigWriteAction::AlreadyEnabled => "already enabled",
-    }
-}
-
 fn render_removal_summary(out: &mut String, summary: &HookRemovalSummary) {
     if summary.file_missing {
         out.push_str("Status     no config file found\n");
@@ -536,45 +496,6 @@ fn ensure_array_field<'a>(
         .ok_or_else(|| anyhow!("{field} must be a JSON array"))
 }
 
-fn enable_codex_hooks_feature(path: &Path) -> Result<ConfigWriteAction> {
-    let existed = path.exists();
-    let content = if existed {
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?
-    } else {
-        String::new()
-    };
-    let mut lines: Vec<String> = content.lines().map(ToString::to_string).collect();
-    if let Some(index) = lines
-        .iter()
-        .position(|line| line.trim_start().starts_with("codex_hooks"))
-    {
-        if lines[index].trim() == "codex_hooks = true" {
-            return Ok(ConfigWriteAction::AlreadyEnabled);
-        }
-        lines[index] = "codex_hooks = true".to_string();
-        fs::write(path, format!("{}\n", lines.join("\n")))
-            .with_context(|| format!("failed to write {}", path.display()))?;
-        return Ok(ConfigWriteAction::Enabled);
-    }
-
-    if let Some(index) = lines.iter().position(|line| line.trim() == "[features]") {
-        lines.insert(index + 1, "codex_hooks = true".to_string());
-    } else {
-        if !lines.is_empty() && !lines.last().map(|line| line.is_empty()).unwrap_or(false) {
-            lines.push(String::new());
-        }
-        lines.push("[features]".to_string());
-        lines.push("codex_hooks = true".to_string());
-    }
-    fs::write(path, format!("{}\n", lines.join("\n")))
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(if existed {
-        ConfigWriteAction::Enabled
-    } else {
-        ConfigWriteAction::Created
-    })
-}
-
 fn resolve_agentgrep(path: Option<PathBuf>) -> Result<PathBuf> {
     let path = match path {
         Some(path) => expand_tilde(&path)?,
@@ -666,29 +587,6 @@ mod tests {
             rewrite_command_for_agentgrep("agentgrep run 'rg stripe'"),
             None
         );
-    }
-
-    #[test]
-    fn codex_feature_insert_preserves_existing_features_table() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        fs::write(&path, "[features]\nfoo = true\n").unwrap();
-        let action = enable_codex_hooks_feature(&path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
-        assert_eq!(action, ConfigWriteAction::Enabled);
-        assert!(content.contains("[features]\ncodex_hooks = true\nfoo = true"));
-    }
-
-    #[test]
-    fn codex_feature_replaces_false_value() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("config.toml");
-        fs::write(&path, "[features]\ncodex_hooks = false\n").unwrap();
-        let action = enable_codex_hooks_feature(&path).unwrap();
-        let content = fs::read_to_string(path).unwrap();
-        assert_eq!(action, ConfigWriteAction::Enabled);
-        assert_eq!(content.matches("codex_hooks").count(), 1);
-        assert!(content.contains("codex_hooks = true"));
     }
 
     #[test]

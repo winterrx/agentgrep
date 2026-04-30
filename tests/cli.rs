@@ -1369,7 +1369,7 @@ fn hooks_install_claude_writes_project_settings() {
 }
 
 #[test]
-fn hooks_install_codex_writes_hooks_and_feature_flag() {
+fn hooks_install_codex_does_not_write_hooks_or_feature_flag() {
     let tmp = tempfile::tempdir().unwrap();
     let output = run_agentgrep(
         tmp.path(),
@@ -1384,31 +1384,15 @@ fn hooks_install_codex_writes_hooks_and_feature_flag() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
-    assert!(
-        stdout.contains("Feature   created codex_hooks = true"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("Installed handler"), "{stdout}");
-    assert!(
-        stdout.contains("no per-Bash Codex hook is installed"),
-        "{stdout}"
-    );
-    let hooks = fs::read_to_string(tmp.path().join(".codex/hooks.json")).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&hooks).unwrap();
-    assert!(value["hooks"].get("PreToolUse").is_none());
-    assert_eq!(
-        value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "/tmp/agentgrep hooks codex-session-start"
-    );
-    let config = fs::read_to_string(tmp.path().join(".codex/config.toml")).unwrap();
-    assert!(
-        config.contains("[features]\ncodex_hooks = true"),
-        "{config}"
-    );
+    assert!(stdout.contains("Feature   unchanged"), "{stdout}");
+    assert!(stdout.contains("Installed handlers\n  none"), "{stdout}");
+    assert!(stdout.contains("Codex hooks are not installed"), "{stdout}");
+    assert!(!tmp.path().join(".codex/hooks.json").exists());
+    assert!(!tmp.path().join(".codex/config.toml").exists());
 }
 
 #[test]
-fn hooks_install_codex_removes_stale_pre_tool_hook() {
+fn hooks_install_codex_removes_stale_agentgrep_hooks() {
     let tmp = tempfile::tempdir().unwrap();
     let hooks_path = tmp.path().join(".codex/hooks.json");
     fs::create_dir_all(hooks_path.parent().unwrap()).unwrap();
@@ -1422,6 +1406,15 @@ fn hooks_install_codex_removes_stale_pre_tool_hook() {
                         "hooks": [
                             { "type": "command", "command": "/tmp/agentgrep hooks codex-pre-tool-use" },
                             { "type": "command", "command": "/tmp/keep-pre-tool" }
+                        ]
+                    }
+                ],
+                "SessionStart": [
+                    {
+                        "matcher": "startup|resume|clear",
+                        "hooks": [
+                            { "type": "command", "command": "/tmp/agentgrep hooks codex-session-start" },
+                            { "type": "command", "command": "/tmp/keep-session" }
                         ]
                     }
                 ]
@@ -1444,7 +1437,7 @@ fn hooks_install_codex_removes_stale_pre_tool_hook() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("Cleaned stale handler"), "{stdout}");
+    assert!(stdout.contains("Removed    2 handlers"), "{stdout}");
     let value: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(hooks_path).unwrap()).unwrap();
     assert_eq!(
@@ -1453,7 +1446,7 @@ fn hooks_install_codex_removes_stale_pre_tool_hook() {
     );
     assert_eq!(
         value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "/tmp/agentgrep hooks codex-session-start"
+        "/tmp/keep-session"
     );
 }
 
