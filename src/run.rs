@@ -159,6 +159,8 @@ fn is_shimmed_command_family(command: &str) -> bool {
             | "npm"
             | "pnpm"
             | "yarn"
+            | "bun"
+            | "bunx"
             | "npx"
             | "vitest"
             | "jest"

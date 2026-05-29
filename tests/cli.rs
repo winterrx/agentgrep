@@ -68,6 +68,46 @@ fn run_agentgrep_with_stdin(cwd: &Path, args: &[&str], stdin: &str) -> Output {
     child.wait_with_output().expect("agentgrep command runs")
 }
 
+fn json_lines(output: &Output) -> Vec<serde_json::Value> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("stdout line is JSON"))
+        .collect()
+}
+
+fn mcp_input(requests: impl IntoIterator<Item = serde_json::Value>) -> String {
+    let mut input = requests
+        .into_iter()
+        .map(|request| request.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    input.push('\n');
+    input
+}
+
+fn mcp_call(id: u64, name: &str, arguments: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments }
+    })
+}
+
+fn mcp_text(value: &serde_json::Value) -> &str {
+    value["result"]["content"][0]["text"]
+        .as_str()
+        .expect("MCP result has text content")
+}
+
+fn mcp_error_message(value: &serde_json::Value) -> &str {
+    value["error"]["message"]
+        .as_str()
+        .expect("MCP error has message")
+}
+
 #[test]
 fn disable_env_bypasses_proxy_optimization() {
     if !has_command("rg") {
@@ -115,6 +155,266 @@ fn run_raw_matches_original_command_byte_for_byte() {
     assert_eq!(proxied.status.code(), raw.status.code());
     assert_eq!(proxied.stdout, raw.stdout);
     assert_eq!(proxied.stderr, raw.stderr);
+}
+
+#[test]
+fn mcp_lists_tools_and_runs_search_context_and_file_reads() {
+    let cwd = fixture();
+    let requests = mcp_input([
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}),
+        serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        mcp_call(
+            3,
+            "agentgrep_search",
+            serde_json::json!({"pattern":"handleStripeWebhook","paths":["src"],"limit":2,"budget":800}),
+        ),
+        mcp_call(
+            4,
+            "agentgrep_context",
+            serde_json::json!({"query":"stripe","path":".","limit":3,"budget":1000}),
+        ),
+        mcp_call(
+            5,
+            "agentgrep_file",
+            serde_json::json!({"path":"src/billing/stripe.ts","lines":"10:14","budget":800}),
+        ),
+    ]);
+    let output = run_agentgrep_with_stdin(&cwd, &["mcp"], &requests);
+    let values = json_lines(&output);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(values.len(), 5, "{values:#?}");
+    assert_eq!(values[0]["result"]["serverInfo"]["name"], "agentgrep");
+
+    let tools = values[1]["result"]["tools"].as_array().unwrap();
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "agentgrep_context"),
+        "{tools:#?}"
+    );
+    assert!(
+        tools.iter().any(|tool| tool["name"] == "agentgrep_run"),
+        "{tools:#?}"
+    );
+
+    let search_text = mcp_text(&values[2]);
+    assert!(search_text.contains("stripe.ts"), "{search_text}");
+    assert!(search_text.contains("handleStripeWebhook"), "{search_text}");
+
+    let context_text = mcp_text(&values[3]);
+    assert!(context_text.contains("## Repo Map"), "{context_text}");
+    assert!(context_text.contains("## Search Results"), "{context_text}");
+    assert!(
+        context_text.contains("## Code Intelligence"),
+        "{context_text}"
+    );
+
+    let file_text = mcp_text(&values[4]);
+    assert!(file_text.contains("src/billing/stripe.ts"), "{file_text}");
+    assert!(file_text.contains("handleStripeWebhook"), "{file_text}");
+}
+
+#[test]
+fn mcp_exposes_cached_code_intel_schema_status_outline_symbols_callers_and_deps() {
+    let cwd = fixture();
+    let requests = mcp_input([
+        mcp_call(
+            1,
+            "agentgrep_schema",
+            serde_json::json!({"tool":"agentgrep_outline","budget":1200}),
+        ),
+        mcp_call(2, "agentgrep_status", serde_json::json!({"budget":800})),
+        mcp_call(
+            3,
+            "agentgrep_outline",
+            serde_json::json!({"path":"src/billing/stripe.ts","limit":10,"budget":1200}),
+        ),
+        mcp_call(
+            4,
+            "agentgrep_symbol",
+            serde_json::json!({"query":"handleStripeWebhook","limit":5,"budget":1200}),
+        ),
+        mcp_call(
+            5,
+            "agentgrep_callers",
+            serde_json::json!({"symbol":"createStripeSubscription","limit":10,"budget":1200}),
+        ),
+        mcp_call(
+            6,
+            "agentgrep_deps",
+            serde_json::json!({"path":"src/billing/stripe.ts","limit":10,"budget":1200}),
+        ),
+    ]);
+    let output = run_agentgrep_with_stdin(&cwd, &["mcp"], &requests);
+    let values = json_lines(&output);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(values.len(), 6, "{values:#?}");
+
+    let schema_text = mcp_text(&values[0]);
+    assert!(
+        schema_text.contains("\"name\": \"agentgrep_outline\""),
+        "{schema_text}"
+    );
+    assert!(schema_text.contains("\"path\""), "{schema_text}");
+
+    let status_text = mcp_text(&values[1]);
+    assert!(status_text.contains("indexed:"), "{status_text}");
+    assert!(status_text.contains("symbol(s)"), "{status_text}");
+    assert!(status_text.contains("sequence:"), "{status_text}");
+
+    let outline_text = mcp_text(&values[2]);
+    assert!(
+        outline_text.contains("src/billing/stripe.ts"),
+        "{outline_text}"
+    );
+    assert!(
+        outline_text.contains("createStripeSubscription"),
+        "{outline_text}"
+    );
+    assert!(
+        outline_text.contains("handleStripeWebhook"),
+        "{outline_text}"
+    );
+
+    let symbol_text = mcp_text(&values[3]);
+    assert!(
+        symbol_text.contains("src/billing/stripe.ts"),
+        "{symbol_text}"
+    );
+    assert!(symbol_text.contains("handleStripeWebhook"), "{symbol_text}");
+
+    let callers_text = mcp_text(&values[4]);
+    assert!(
+        callers_text.contains("tests/billing.test.ts"),
+        "{callers_text}"
+    );
+    assert!(
+        callers_text.contains("createStripeSubscription"),
+        "{callers_text}"
+    );
+
+    let deps_text = mcp_text(&values[5]);
+    assert!(deps_text.contains("Imported by:"), "{deps_text}");
+    assert!(deps_text.contains("tests/billing.test.ts"), "{deps_text}");
+    assert!(deps_text.contains("../src/billing/stripe"), "{deps_text}");
+}
+
+#[test]
+fn mcp_accepts_explicit_root_and_rejects_path_escape() {
+    let fixture = fixture();
+    let fixture_arg = fixture.to_str().unwrap();
+    let escaped = repo_root().join("Cargo.toml");
+    let requests = mcp_input([
+        mcp_call(
+            1,
+            "agentgrep_file",
+            serde_json::json!({"path":"src/billing/stripe.ts","lines":"10:10","budget":400}),
+        ),
+        mcp_call(2, "agentgrep_file", serde_json::json!({"path": escaped})),
+    ]);
+    let output = run_agentgrep_with_stdin(&repo_root(), &["mcp", fixture_arg], &requests);
+    let values = json_lines(&output);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(values.len(), 2, "{values:#?}");
+    assert!(
+        mcp_text(&values[0]).contains("handleStripeWebhook"),
+        "{values:#?}"
+    );
+    assert_eq!(values[1]["error"]["code"], -32602);
+    assert!(
+        mcp_error_message(&values[1]).contains("escapes MCP root"),
+        "{values:#?}"
+    );
+}
+
+#[test]
+fn mcp_rejects_unknown_tools_bad_arguments_and_mutating_run_commands() {
+    let cwd = fixture();
+    let requests = mcp_input([
+        mcp_call(1, "agentgrep_nope", serde_json::json!({})),
+        mcp_call(2, "agentgrep_search", serde_json::json!({"pattern":42})),
+        mcp_call(
+            3,
+            "agentgrep_run",
+            serde_json::json!({"command":"git commit -m nope"}),
+        ),
+        mcp_call(
+            4,
+            "agentgrep_search",
+            serde_json::json!({"pattern":"stripe","patten":"typo"}),
+        ),
+        mcp_call(5, "agentgrep_search", serde_json::json!({"pattern":""})),
+    ]);
+    let output = run_agentgrep_with_stdin(&cwd, &["mcp"], &requests);
+    let values = json_lines(&output);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(values.len(), 5, "{values:#?}");
+    assert_eq!(values[0]["error"]["code"], -32601);
+    assert_eq!(values[1]["error"]["code"], -32602);
+    assert_eq!(values[2]["error"]["code"], -32602);
+    assert_eq!(values[3]["error"]["code"], -32602);
+    assert_eq!(values[4]["error"]["code"], -32602);
+    assert!(
+        mcp_error_message(&values[2]).contains("mutating git"),
+        "{values:#?}"
+    );
+    assert!(
+        mcp_error_message(&values[3]).contains("unexpected argument: patten"),
+        "{values:#?}"
+    );
+    assert!(
+        mcp_error_message(&values[4]).contains("non-empty string"),
+        "{values:#?}"
+    );
+}
+
+#[test]
+fn mcp_rejects_sensitive_files_inside_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join(".env-local"), "API_KEY=secret\n").unwrap();
+    fs::write(tmp.path().join("safe.txt"), "safe\n").unwrap();
+    let requests = mcp_input([
+        mcp_call(1, "agentgrep_file", serde_json::json!({"path":"safe.txt"})),
+        mcp_call(
+            2,
+            "agentgrep_file",
+            serde_json::json!({"path":".env-local"}),
+        ),
+    ]);
+    let output = run_agentgrep_with_stdin(tmp.path(), &["mcp"], &requests);
+    let values = json_lines(&output);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(values.len(), 2, "{values:#?}");
+    assert!(mcp_text(&values[0]).contains("safe"), "{values:#?}");
+    assert_eq!(values[1]["error"]["code"], -32602);
+    assert!(
+        mcp_error_message(&values[1]).contains("sensitive material"),
+        "{values:#?}"
+    );
 }
 
 #[test]
@@ -357,7 +657,7 @@ fn repo_listing_commands_use_filtered_map_even_when_raw_is_small() {
 }
 
 #[test]
-fn find_name_filters_are_honored_by_compact_map() {
+fn find_name_filters_use_compact_file_list() {
     let cwd = fixture();
     let output = run_agentgrep(
         &cwd,
@@ -373,16 +673,27 @@ fn find_name_filters_are_honored_by_compact_map() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(output.status.success(), "{stdout}");
-    assert!(stdout.contains("agentgrep optimized:"), "{stdout}");
-    assert!(stdout.contains("Find filters: name=*.ts"), "{stdout}");
-    assert!(stdout.contains("src/billing/stripe.ts"), "{stdout}");
-    assert!(stdout.contains("tests/billing.test.ts"), "{stdout}");
+    assert!(!stdout.contains("agentgrep optimized:"), "{stdout}");
+    assert!(!stdout.contains("Find filters: name=*.ts"), "{stdout}");
+    assert!(stdout.contains("./src/billing/stripe.ts"), "{stdout}");
+    assert!(stdout.contains("./tests/billing.test.ts"), "{stdout}");
     assert!(!stdout.contains("docs/stripe-notes.md"), "{stdout}");
     assert!(!stdout.contains("vendor/stripe-sdk.js"), "{stdout}");
     assert!(
         !stdout.contains("generated/schema.generated.ts"),
         "{stdout}"
     );
+    assert!(stdout.len() < 100, "{stdout}");
+}
+
+#[test]
+fn doctor_reports_coverage_tool_readiness() {
+    let output = run_agentgrep(&repo_root(), &["doctor"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("cargo llvm-cov:"), "{stdout}");
+    assert!(stdout.contains("status: ok"), "{stdout}");
 }
 
 #[test]
@@ -415,14 +726,14 @@ fn shims_install_status_and_uninstall() {
     let installed = run_agentgrep(tmp.path(), &["shims", "install", "--dir", &dir_arg]);
     let install_stdout = String::from_utf8_lossy(&installed.stdout);
     assert!(installed.status.success());
-    assert!(install_stdout.contains("installed: 28"));
+    assert!(install_stdout.contains("installed: 30"));
     assert!(dir.join("rg").is_file());
 
     let status = run_agentgrep(tmp.path(), &["shims", "status", "--dir", &dir_arg]);
     let status_stdout = String::from_utf8_lossy(&status.stdout);
     assert!(status.status.success());
     assert!(status_stdout.contains("rg: installed"));
-    assert!(status_stdout.contains("installed: 28/28"));
+    assert!(status_stdout.contains("installed: 30/30"));
 
     let uninstalled = run_agentgrep(tmp.path(), &["shims", "uninstall", "--dir", &dir_arg]);
     assert!(uninstalled.status.success());
@@ -447,7 +758,7 @@ fn shims_default_to_user_local_bin() {
     let status_stdout = String::from_utf8_lossy(&status.stdout);
     assert!(status.status.success(), "{status_stdout}");
     assert!(status_stdout.contains("rg: installed"));
-    assert!(status_stdout.contains("installed: 28/28"));
+    assert!(status_stdout.contains("installed: 30/30"));
 }
 
 #[cfg(unix)]
@@ -880,6 +1191,28 @@ fn trace_record_summary_and_replay_work_end_to_end() {
     assert!(replay_stdout.contains("agentgrep trace replay"));
     assert!(replay_stdout.contains("cat src/billing/stripe.ts"));
     assert!(replay_stdout.contains("gates: pass"));
+}
+
+#[test]
+fn trace_summary_surfaces_unsupported_command_shapes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let trace = tmp.path().join("commands.jsonl");
+    fs::write(
+        &trace,
+        "{\"version\":1,\"source\":\"test\",\"ts\":1,\"cwd\":\".\",\"command\":\"bun run typecheck 2>&1 | tail -20\",\"family\":\"unsupported\"}\n\
+         {\"version\":1,\"source\":\"test\",\"ts\":2,\"cwd\":\".\",\"command\":\"PATH=/usr/bin:/bin gh pr checks 1 2>&1 | tail -5\",\"family\":\"unsupported\"}\n",
+    )
+    .unwrap();
+
+    let summary = run_agentgrep(tmp.path(), &["trace", "summary", trace.to_str().unwrap()]);
+    let stdout = String::from_utf8_lossy(&summary.stdout);
+    assert!(summary.status.success(), "{stdout}");
+    assert!(stdout.contains("Unsupported executables"));
+    assert!(stdout.contains("bun"));
+    assert!(stdout.contains("gh"));
+    assert!(stdout.contains("Shell syntax in unsupported"));
+    assert!(stdout.contains("pipe"));
+    assert!(stdout.contains("redirection"));
 }
 
 #[test]

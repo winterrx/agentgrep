@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::cli::BenchArgs;
-use crate::command::{ParsedCommand, parse_command};
+use crate::command::{FileSliceRange, ParsedCommand, parse_command};
 use crate::exec::{command_exists, run_shell_capture_real_tools};
 use crate::filters::collect_source_files;
 use crate::output::{ExecResult, OutputOptions, estimate_tokens_from_bytes, json_result};
@@ -280,6 +280,7 @@ pub(crate) fn run_benchmark(
                     })
                 })
             })?,
+            "codedb" => timed(|| execute_codedb_mode(command))?,
             other => bail!("unknown bench compare mode: {other}"),
         };
         let tokens = estimate_tokens_from_bytes(timed.result.stdout.len());
@@ -338,6 +339,68 @@ fn execute_indexed_mode(command: &str, options: OutputOptions) -> Result<ExecRes
             Some(format!("indexed {command}")),
         ),
         _ => run::execute_run(command, options),
+    }
+}
+
+fn execute_codedb_mode(command: &str) -> Result<ExecResult> {
+    let prefix = codedb_command_prefix()?;
+    let mapped = map_codedb_command_with_prefix(command, &prefix)?;
+    let captured = run_shell_capture_real_tools(&mapped, None)?;
+    Ok(ExecResult::from_parts(
+        captured.stdout,
+        captured.stderr,
+        captured.exit_code,
+    ))
+}
+
+fn codedb_command_prefix() -> Result<String> {
+    if command_exists("codedb").is_some() {
+        return Ok("codedb".to_string());
+    }
+    if command_exists("npx").is_some() {
+        return Ok("npx -y codedeebee".to_string());
+    }
+    bail!("codedb compare mode requested but neither `codedb` nor `npx` is installed")
+}
+
+#[cfg(test)]
+fn map_codedb_command(command: &str) -> Result<String> {
+    map_codedb_command_with_prefix(command, "codedb")
+}
+
+fn map_codedb_command_with_prefix(command: &str, prefix: &str) -> Result<String> {
+    match parse_command(command)? {
+        ParsedCommand::Search(search_command) => Ok(format!(
+            "{prefix} search {}",
+            shell_words::quote(&search_command.pattern)
+        )),
+        ParsedCommand::FindMap { query } => Ok(format!(
+            "{prefix} tree {}",
+            shell_words::quote(&query.path.display().to_string())
+        )),
+        ParsedCommand::LsRecursive { path } | ParsedCommand::TreeMap { path } => Ok(format!(
+            "{prefix} tree {}",
+            shell_words::quote(&path.display().to_string())
+        )),
+        ParsedCommand::Cat { path } => Ok(format!(
+            "{prefix} read {}",
+            shell_words::quote(&path.display().to_string())
+        )),
+        ParsedCommand::FileSlice(slice) => {
+            let lines = match slice.range {
+                FileSliceRange::Explicit { start, end } => format!("{start}-{end}"),
+                FileSliceRange::FirstLines(end) => format!("1-{end}"),
+                FileSliceRange::LastLines(_) => {
+                    bail!("codedb compare mode cannot map tail commands without line counts")
+                }
+            };
+            Ok(format!(
+                "{prefix} read {} -L {}",
+                shell_words::quote(&slice.path.display().to_string()),
+                shell_words::quote(&lines)
+            ))
+        }
+        _ => bail!("codedb compare mode cannot map command: {command}"),
     }
 }
 
@@ -406,7 +469,7 @@ pub(crate) fn parse_modes(compare: &str) -> Result<Vec<String>> {
         bail!("--compare must include at least one mode");
     }
     for mode in &modes {
-        if !matches!(mode.as_str(), "raw" | "proxy" | "indexed") {
+        if !matches!(mode.as_str(), "raw" | "proxy" | "indexed" | "codedb") {
             bail!("unknown compare mode: {mode}");
         }
     }
@@ -416,6 +479,7 @@ pub(crate) fn parse_modes(compare: &str) -> Result<Vec<String>> {
 fn suite_commands(suite: &str) -> Result<Vec<String>> {
     match suite {
         "discovery" => Ok(discovery_suite_commands()),
+        "codedb-parity" | "agent-dx" => Ok(codedb_parity_suite_commands()),
         "all" | "intercepts" => all_suite_commands(),
         _ => bail!("unknown benchmark suite: {suite}"),
     }
@@ -440,6 +504,23 @@ fn discovery_suite_commands() -> Vec<String> {
         commands.push("tree -L 2 .".to_string());
     }
     commands
+}
+
+fn codedb_parity_suite_commands() -> Vec<String> {
+    let sample_file = code_intel_sample_file().unwrap_or_else(|| PathBuf::from("Cargo.toml"));
+    let sample = shell_words::quote(&sample_file.display().to_string()).into_owned();
+    let pattern = sample_pattern(&sample_file);
+    let search_paths = search_paths_arg();
+    vec![
+        format!(
+            "rg --sort path {} {}",
+            shell_words::quote(&pattern),
+            search_paths
+        ),
+        "find . -type f".to_string(),
+        format!("cat {sample}"),
+        format!("sed -n '1,40p' {sample}"),
+    ]
 }
 
 fn all_suite_commands() -> Result<Vec<String>> {
@@ -618,9 +699,56 @@ fn sample_file() -> Option<PathBuf> {
         })
 }
 
+fn code_intel_sample_file() -> Option<PathBuf> {
+    let preferred = [
+        "src/main.rs",
+        "src/lib.rs",
+        "src/index.ts",
+        "src/index.tsx",
+        "src/app.ts",
+        "src/app.tsx",
+        "src/billing/stripe.ts",
+        "main.py",
+        "main.go",
+    ];
+    preferred
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+        .or_else(|| {
+            collect_source_files(&[PathBuf::from(".")])
+                .into_iter()
+                .find(|path| is_code_sample(path))
+        })
+        .or_else(sample_file)
+}
+
+fn is_code_sample(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "rs" | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "py"
+                | "go"
+                | "zig"
+                | "c"
+                | "cc"
+                | "cpp"
+                | "h"
+                | "hpp"
+        )
+    )
+}
+
 fn sample_pattern(sample_file: &Path) -> String {
     let content = fs::read_to_string(sample_file).unwrap_or_default();
-    for candidate in ["agentgrep", "Agentgrep", "fn", "use", "pub"] {
+    for candidate in ["agentgrep", "Agentgrep", "stripe", "fn", "use", "pub"] {
         if content.contains(candidate) {
             return candidate.to_string();
         }
@@ -733,10 +861,30 @@ mod tests {
     #[test]
     fn parses_compare_modes() {
         assert_eq!(
-            parse_modes("raw,proxy,indexed").unwrap(),
-            vec!["raw", "proxy", "indexed"]
+            parse_modes("raw,proxy,indexed,codedb").unwrap(),
+            vec!["raw", "proxy", "indexed", "codedb"]
         );
         assert!(parse_modes("raw,nope").is_err());
+    }
+
+    #[test]
+    fn maps_supported_commands_to_codedb_cli() {
+        assert_eq!(
+            map_codedb_command("rg --sort path stripe src").unwrap(),
+            "codedb search stripe"
+        );
+        assert_eq!(
+            map_codedb_command("find . -type f").unwrap(),
+            "codedb tree ."
+        );
+        assert_eq!(
+            map_codedb_command("cat src/main.rs").unwrap(),
+            "codedb read src/main.rs"
+        );
+        assert_eq!(
+            map_codedb_command("sed -n '1,40p' src/main.rs").unwrap(),
+            "codedb read src/main.rs -L 1-40"
+        );
     }
 
     #[test]

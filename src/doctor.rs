@@ -11,6 +11,7 @@ pub struct DoctorSummary {
     pub ripgrep: ToolStatus,
     pub git: ToolStatus,
     pub sqlite3: ToolStatus,
+    pub cargo_llvm_cov: ToolStatus,
     pub index_present: bool,
     pub status: String,
 }
@@ -31,6 +32,7 @@ pub fn execute_doctor(options: OutputOptions) -> Result<ExecResult> {
         ripgrep: tool_status("rg", "rg --version"),
         git: tool_status("git", "git --version"),
         sqlite3: tool_status("sqlite3", "sqlite3 --version"),
+        cargo_llvm_cov: tool_status("cargo-llvm-cov", "cargo llvm-cov --version"),
         index_present: crate::index::user_index_path(&cwd).is_file(),
         status: "ok".to_string(),
     };
@@ -46,6 +48,7 @@ pub fn execute_doctor(options: OutputOptions) -> Result<ExecResult> {
     out.push_str(&format_tool("ripgrep", &summary.ripgrep));
     out.push_str(&format_tool("git", &summary.git));
     out.push_str(&format_tool("sqlite3", &summary.sqlite3));
+    out.push_str(&format_tool("cargo llvm-cov", &summary.cargo_llvm_cov));
     out.push_str(&format!(
         "index present: {}\n",
         yes_no(summary.index_present)

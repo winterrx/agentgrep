@@ -73,6 +73,8 @@ struct TraceSummary {
     records: usize,
     unique_commands: usize,
     families: Vec<TraceCount>,
+    unsupported_executables: Vec<TraceCount>,
+    shell_syntax: Vec<TraceCount>,
     commands: Vec<TraceCount>,
     workdirs: Vec<TraceCount>,
 }
@@ -387,6 +389,20 @@ fn execute_summary(args: TraceSummaryArgs) -> Result<ExecResult> {
         &mut out,
         "Families",
         &summary.families,
+        options,
+        &mut truncated,
+    );
+    render_counts(
+        &mut out,
+        "Unsupported executables",
+        &summary.unsupported_executables,
+        options,
+        &mut truncated,
+    );
+    render_counts(
+        &mut out,
+        "Shell syntax in unsupported",
+        &summary.shell_syntax,
         options,
         &mut truncated,
     );
@@ -959,11 +975,21 @@ fn load_records(path: &Path) -> Result<Vec<TraceRecord>> {
 
 fn summarize_records(path: &Path, records: &[TraceRecord], limit: usize) -> TraceSummary {
     let mut families = BTreeMap::new();
+    let mut unsupported_executables = BTreeMap::new();
+    let mut shell_syntax = BTreeMap::new();
     let mut commands = BTreeMap::new();
     let mut workdirs = BTreeMap::new();
     for record in records {
         *families.entry(record.family.clone()).or_insert(0) += 1;
         *commands.entry(record.command.clone()).or_insert(0) += 1;
+        if record.family == "unsupported" {
+            *unsupported_executables
+                .entry(command_executable_label(&record.command))
+                .or_insert(0) += 1;
+            for label in shell_syntax_labels(&record.command) {
+                *shell_syntax.entry(label.to_string()).or_insert(0) += 1;
+            }
+        }
         if let Some(cwd) = &record.cwd {
             *workdirs.entry(cwd.clone()).or_insert(0) += 1;
         }
@@ -973,9 +999,55 @@ fn summarize_records(path: &Path, records: &[TraceRecord], limit: usize) -> Trac
         records: records.len(),
         unique_commands: commands.len(),
         families: top_counts(families, limit),
+        unsupported_executables: top_counts(unsupported_executables, limit),
+        shell_syntax: top_counts(shell_syntax, limit),
         commands: top_counts(commands, limit),
         workdirs: top_counts(workdirs, limit),
     }
+}
+
+fn command_executable_label(command: &str) -> String {
+    let Ok(words) = shell_words::split(command) else {
+        return "<parse-error>".to_string();
+    };
+    let Some(word) = words.iter().find(|word| !is_env_assignment(word)) else {
+        return "<empty>".to_string();
+    };
+    Path::new(word)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(word)
+        .to_string()
+}
+
+fn is_env_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn shell_syntax_labels(command: &str) -> impl Iterator<Item = &'static str> + '_ {
+    [
+        ("pipe", command.contains('|')),
+        (
+            "redirection",
+            command.contains('>') || command.contains('<'),
+        ),
+        ("and_or", command.contains("&&") || command.contains("||")),
+        ("sequence", command.contains(';') || command.contains('\n')),
+        (
+            "substitution",
+            command.contains("$(") || command.contains('`'),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(label, present)| present.then_some(label))
 }
 
 fn top_counts(counts: BTreeMap<String, usize>, limit: usize) -> Vec<TraceCount> {
@@ -1080,6 +1152,7 @@ fn command_family(command: &str) -> String {
             crate::command::TestCommand::Npm => "npm".to_string(),
             crate::command::TestCommand::Pnpm => "pnpm".to_string(),
             crate::command::TestCommand::Yarn => "yarn".to_string(),
+            crate::command::TestCommand::Bun => "bun".to_string(),
             crate::command::TestCommand::Vitest => "vitest".to_string(),
             crate::command::TestCommand::Jest => "jest".to_string(),
             crate::command::TestCommand::Playwright => "playwright".to_string(),

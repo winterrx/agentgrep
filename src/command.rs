@@ -106,6 +106,7 @@ pub enum TestCommand {
     Npm,
     Pnpm,
     Yarn,
+    Bun,
     Vitest,
     Jest,
     Playwright,
@@ -169,6 +170,8 @@ pub fn parse_command(command: &str) -> Result<ParsedCommand, ParseCommandError> 
         "npm" => parse_node_package_manager(&words, TestCommand::Npm),
         "pnpm" => parse_node_package_manager(&words, TestCommand::Pnpm),
         "yarn" => parse_node_package_manager(&words, TestCommand::Yarn),
+        "bun" => parse_bun(&words),
+        "bunx" => parse_bunx(&words),
         "npx" => parse_npx(&words),
         "vitest" => Ok(ParsedCommand::Test(TestCommand::Vitest)),
         "jest" => Ok(ParsedCommand::Test(TestCommand::Jest)),
@@ -214,6 +217,21 @@ fn parse_node_package_manager(
     }
 }
 
+fn parse_bun(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    let Some(script) = bun_script_name(words) else {
+        return Ok(ParsedCommand::Unsupported {
+            reason: "bun command is not a known agent test/check/build/lint command".to_string(),
+        });
+    };
+    if is_agent_check_script(script) {
+        Ok(ParsedCommand::Test(TestCommand::Bun))
+    } else {
+        Ok(ParsedCommand::Unsupported {
+            reason: "bun command is passed through".to_string(),
+        })
+    }
+}
+
 fn node_script_name(words: &[String]) -> Option<&str> {
     let first = words.get(1)?.as_str();
     if first == "run" {
@@ -225,7 +243,62 @@ fn node_script_name(words: &[String]) -> Option<&str> {
     Some(first)
 }
 
+fn bun_script_name(words: &[String]) -> Option<&str> {
+    let mut i = 1;
+    while i < words.len() {
+        match words[i].as_str() {
+            "--cwd" | "-C" | "--filter" | "--workspace" => i += 2,
+            word if word.starts_with("--cwd=")
+                || word.starts_with("--filter=")
+                || word.starts_with("--workspace=") =>
+            {
+                i += 1
+            }
+            "run" => return words.get(i + 1).map(String::as_str),
+            "test" => return Some("test"),
+            word if word.starts_with('-') => i += 1,
+            word => return Some(word),
+        }
+    }
+    None
+}
+
+fn is_agent_check_script(script: &str) -> bool {
+    matches!(
+        script,
+        "test"
+            | "build"
+            | "lint"
+            | "typecheck"
+            | "check"
+            | "vitest"
+            | "jest"
+            | "playwright"
+            | "fmt"
+            | "format"
+            | "fmt:check"
+            | "opencode:validate"
+    ) || script.starts_with("lint:")
+        || script.starts_with("test:")
+        || script.starts_with("typecheck:")
+        || script.ends_with(":test")
+        || script.ends_with(":lint")
+        || script.ends_with(":typecheck")
+        || script.ends_with(":validate")
+}
+
 fn parse_npx(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    parse_runner_invocation(words, "npx")
+}
+
+fn parse_bunx(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
+    parse_runner_invocation(words, "bunx")
+}
+
+fn parse_runner_invocation(
+    words: &[String],
+    command_name: &str,
+) -> Result<ParsedCommand, ParseCommandError> {
     let runner = words
         .iter()
         .skip(1)
@@ -236,7 +309,7 @@ fn parse_npx(words: &[String]) -> Result<ParsedCommand, ParseCommandError> {
         Some("jest") => Ok(ParsedCommand::Test(TestCommand::Jest)),
         Some("playwright") => Ok(ParsedCommand::Test(TestCommand::Playwright)),
         _ => Ok(ParsedCommand::Unsupported {
-            reason: "npx command is not a known test runner".to_string(),
+            reason: format!("{command_name} command is not a known test runner"),
         }),
     }
 }
@@ -1278,6 +1351,22 @@ mod tests {
         assert_eq!(
             parse_command("pnpm vitest run").unwrap(),
             ParsedCommand::Test(TestCommand::Pnpm)
+        );
+        assert_eq!(
+            parse_command("bun --cwd apps/web run typecheck").unwrap(),
+            ParsedCommand::Test(TestCommand::Bun)
+        );
+        assert_eq!(
+            parse_command("bun run lint:repo-guard").unwrap(),
+            ParsedCommand::Test(TestCommand::Bun)
+        );
+        assert!(matches!(
+            parse_command("bun run dev").unwrap(),
+            ParsedCommand::Unsupported { .. }
+        ));
+        assert_eq!(
+            parse_command("bunx vitest run").unwrap(),
+            ParsedCommand::Test(TestCommand::Vitest)
         );
         assert_eq!(
             parse_command("npx playwright test").unwrap(),

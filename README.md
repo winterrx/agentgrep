@@ -19,7 +19,7 @@ export PATH="$HOME/.local/bin:$PATH"
 agentgrep shims status
 ```
 
-Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, `tree`, `cargo`, `pytest`, `py.test`, `python`, `python3`, `go`, `npm`, `pnpm`, `yarn`, `npx`, `vitest`, `jest`, `playwright`, `ruff`, `mypy`, and `deps`. `agentgrep shims status` reports when the shim directory is present but shadowed by earlier system paths. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, pass piped stdin directly to the real tool, and decline optimization when a parent shell command contains a pipeline or redirection. Remove them with:
+Shims are available for `rg`, `grep`, `find`, `ls`, `cat`, `git`, `head`, `tail`, `sed`, `nl`, `wc`, `tree`, `cargo`, `pytest`, `py.test`, `python`, `python3`, `go`, `npm`, `pnpm`, `yarn`, `bun`, `bunx`, `npx`, `vitest`, `jest`, `playwright`, `ruff`, `mypy`, and `deps`. `agentgrep shims status` reports when the shim directory is present but shadowed by earlier system paths. They remove their own directory from `PATH` before executing so raw fallback resolves the real tool instead of recursing, pass piped stdin directly to the real tool, and decline optimization when a parent shell command contains a pipeline or redirection. Remove them with:
 
 ```bash
 agentgrep shims uninstall
@@ -73,6 +73,7 @@ agentgrep run "cargo test -- --list"
 agentgrep run "pytest -q"
 agentgrep run "python -m pytest -q"
 agentgrep run "go test ./..."
+agentgrep run "bun --cwd apps/web run typecheck"
 agentgrep run "deps"
 ```
 
@@ -90,7 +91,7 @@ Safety defaults:
 - Unsupported `find` predicates such as pruning, boolean expressions, execs, deletes, path regexes, and unknown tests pass through to the real tool for exact semantics.
 - Complex `rg`/`grep` forms with filters, sort options, context flags, or `-e` patterns compact the actual raw result stream instead of re-running an approximate search.
 - Plain/verbose `git log` is rendered through a compact format that keeps commit hash, subject, relative date, author, and a few body lines; explicit user formats such as `--oneline`, `--pretty`, and `--format` are preserved.
-- `cargo test`, `cargo check`, `cargo clippy`, `pytest`, `python -m pytest`, `go test`, Node package-manager test scripts, `vitest`, `jest`, `playwright`, `ruff`, and `mypy` are recognized as runner/diagnostic commands. V1 only compacts large stdout while preserving stderr byte-for-byte, so compile errors and runner diagnostics are not silently hidden.
+- `cargo test`, `cargo check`, `cargo clippy`, `pytest`, `python -m pytest`, `go test`, Node package-manager test scripts, Bun test/check/lint/build scripts, `vitest`, `jest`, `playwright`, `ruff`, and `mypy` are recognized as runner/diagnostic commands. V1 only compacts large stdout while preserving stderr byte-for-byte, so compile errors and runner diagnostics are not silently hidden.
 - `deps` summarizes dependency manifests (`Cargo.toml`, `package.json`, `requirements.txt`, `pyproject.toml`, and `go.mod`) without pretending to be an exact manifest read.
 - Compacted truncated output includes a raw rerun hint, and when raw output is large enough it is tee'd under `~/.agentgrep/tee/<project>/`.
 - Optimized raw probes stream stdout/stderr instead of using one giant `Command::output()` buffer. Stdout capture is capped by `AGENTGREP_CAPTURE_MAX_STDOUT_BYTES` (default 4 MiB, `0` disables) for optimized renderers; `--raw` remains byte-for-byte exact and ignores this cap.
@@ -112,7 +113,33 @@ agentgrep deps .
 agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed
 agentgrep bench --suite discovery --compare raw,proxy,indexed
 agentgrep bench --suite all --compare raw,proxy,indexed
+agentgrep bench --suite agent-dx --compare raw,proxy,indexed,codedb
 agentgrep doctor
+```
+
+## MCP server
+
+`agentgrep mcp [root]` runs a newline-delimited JSON-RPC stdio server for agent clients. Relative paths and `agentgrep_run` commands execute inside the root, which defaults to the launch directory. Tool paths are resolved against that root, and path traversal or absolute paths outside it are rejected.
+
+The MCP process builds one cached source index on startup and refreshes it when the root file set changes, so repeated agent calls avoid re-walking the repo for structural queries. MCP path validation also blocks sensitive local material such as `.env*`, credentials, secrets, private keys, `.ssh`, and `.aws` paths. It exposes compact read-only tools backed by the same implementation as the CLI:
+
+- `agentgrep_status`: cached index status, sequence, refresh count, and build timing.
+- `agentgrep_schema`: runtime schema introspection for one tool or the full MCP surface.
+- `agentgrep_search`: compact regex/literal search.
+- `agentgrep_context`: repo map, search results, and cached symbol/caller hints for one task query.
+- `agentgrep_file`: file or line-range reads with large-file summarization.
+- `agentgrep_map`: filtered repo map.
+- `agentgrep_outline`: imports and symbols for one file.
+- `agentgrep_symbol`: cached symbol-definition lookup.
+- `agentgrep_callers`: cached call-site lookup for a symbol.
+- `agentgrep_deps`: direct imports, local reverse imports, and manifest paths for one file.
+- `agentgrep_run`: supported read-only proxy command families; mutating `git`, unsupported commands, and unsafe shell syntax are rejected.
+
+Example registration:
+
+```bash
+codex mcp add agentgrep -- /path/to/agentgrep mcp /path/to/project
+claude mcp add agentgrep -s user -- /path/to/agentgrep mcp /path/to/project
 ```
 
 ## Traces
@@ -164,11 +191,22 @@ The benchmark command compares raw, proxy, and indexed modes:
 agentgrep bench --command 'rg stripe' --compare raw,proxy,indexed
 agentgrep bench --suite discovery --compare raw,proxy,indexed
 agentgrep bench --suite all --compare raw,proxy,indexed
+agentgrep bench --suite agent-dx --compare raw,proxy,indexed,codedb
 agentgrep trace replay ~/.agentgrep/traces/codex.jsonl --repo .
 ```
 
-It reports raw/proxy/indexed time, output bytes, estimated tokens, token savings, speedup ratio, exit-code parity, stderr parity, and `--raw` exactness. Gates are reported for raw exactness, exit-code parity, stderr parity, truncation visibility, and 60% token savings when raw output is large enough to matter.
+It reports raw/proxy/indexed/codedb time where requested, output bytes, estimated tokens, token savings, speedup ratio, exit-code parity, stderr parity, and `--raw` exactness. Gates are reported for raw exactness, exit-code parity, stderr parity, truncation visibility, and 60% token savings when raw output is large enough to matter.
 
-The built-in `discovery` suite replays a small fixture mix of realistic agent reads: broad search, recursive listing, file reads, line slices, and line counts. The `all` suite builds a workspace-local benchmark set that covers every intercepted command family, including read-only git commands when the current repo supports them. It also adds repo-detected coverage placeholders for expanded runner families: Cargo check/clippy/test, pytest, Go tests, Node package-manager tests, Vitest, Jest, Playwright, Ruff, and Mypy when their manifests, configs, scripts, or tools are present.
+The built-in `discovery` suite replays a small fixture mix of realistic agent reads: broad search, recursive listing, file reads, line slices, and line counts. The `all` suite builds a workspace-local benchmark set that covers every intercepted command family, including read-only git commands when the current repo supports them. It also adds repo-detected coverage placeholders for expanded runner families: Cargo check/clippy/test, pytest, Go tests, Node package-manager tests, Vitest, Jest, Playwright, Ruff, and Mypy when their manifests, configs, scripts, or tools are present. The `agent-dx`/`codedb-parity` suite limits itself to command shapes that can be mapped honestly to codedb CLI equivalents; include `codedb` in `--compare` when either the `codedb` binary or `npx` is available. This competitor mode measures codedb's CLI/npx path, not codedb's warm long-running MCP server.
 
 Trace replay is the dogfood loop for local workspaces: import the Codex session trace, summarize the command families agents are leaning on, then benchmark the top safe commands against raw/proxy/indexed behavior.
+
+Coverage tooling is intentionally external and CI-friendly:
+
+```bash
+cargo install cargo-llvm-cov
+cargo llvm-cov --all-targets --workspace --summary-only
+agentgrep doctor
+```
+
+`agentgrep doctor` reports whether `cargo llvm-cov` is available so release checks can include coverage without making normal builds depend on an optional cargo subcommand.

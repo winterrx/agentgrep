@@ -218,6 +218,14 @@ pub fn render_map(
         return json_result(command, true, exit_code, stderr, summary.truncated, summary);
     }
 
+    if let Some(output) = compact_find_list(summary, options.budget) {
+        return Ok(ExecResult::from_parts(
+            output.into_bytes(),
+            stderr.to_vec(),
+            exit_code,
+        ));
+    }
+
     let mut out = String::new();
     let mut budget_truncated = false;
     push_budgeted_line(
@@ -292,6 +300,25 @@ pub fn render_map(
     ))
 }
 
+fn compact_find_list(summary: &RepoMapSummary, budget: usize) -> Option<String> {
+    if summary.query_filters.is_empty() || summary.truncated || summary.files.len() > 32 {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut budget_truncated = false;
+    for file in &summary.files {
+        let line = Path::new(&summary.root).join(file).display().to_string();
+        if !push_budgeted_line(&mut out, &line, budget, &mut budget_truncated) {
+            break;
+        }
+    }
+    if budget_truncated {
+        out.push_str("Truncated: increase --budget for more.\n");
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +385,48 @@ mod tests {
         );
 
         assert_eq!(summary.files, vec!["README.MD"]);
+    }
+
+    #[test]
+    fn compact_find_list_uses_find_style_paths() {
+        let summary = RepoMapSummary {
+            root: ".".to_string(),
+            total_files: 2,
+            shown_files: 2,
+            omitted_files: 0,
+            truncated: false,
+            directories: Vec::new(),
+            files: vec!["README.md".to_string(), "docs/acceptance.md".to_string()],
+            filters: Vec::new(),
+            query_filters: vec!["name=*.md".to_string()],
+        };
+
+        assert_eq!(
+            compact_find_list(&summary, 4000).as_deref(),
+            Some("./README.md\n./docs/acceptance.md\n")
+        );
+    }
+
+    #[test]
+    fn compact_find_list_respects_budget() {
+        let summary = RepoMapSummary {
+            root: ".".to_string(),
+            total_files: 2,
+            shown_files: 2,
+            omitted_files: 0,
+            truncated: false,
+            directories: Vec::new(),
+            files: vec![
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md".to_string(),
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.md".to_string(),
+            ],
+            filters: Vec::new(),
+            query_filters: vec!["name=*.md".to_string()],
+        };
+
+        let output = compact_find_list(&summary, 4).unwrap();
+        assert!(output.starts_with("./aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md\n"));
+        assert!(!output.contains("./bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.md"));
+        assert!(output.contains("Truncated: increase --budget for more."));
     }
 }
