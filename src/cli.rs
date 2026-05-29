@@ -9,6 +9,7 @@ use crate::doctor;
 use crate::file_view;
 use crate::hooks;
 use crate::index;
+use crate::mcp;
 use crate::output::{ExecResult, OutputOptions};
 use crate::repo_map;
 use crate::run;
@@ -48,6 +49,8 @@ pub enum Commands {
     Gain(GainArgs),
     /// Summarize project dependency manifests.
     Deps(DepsArgs),
+    /// Run a compact MCP stdio server for agent-facing code search.
+    Mcp(McpArgs),
     /// Install or inspect opt-in shell command shims.
     Shims(ShimsArgs),
     /// Install and run coding-agent hook integrations.
@@ -142,6 +145,13 @@ pub struct DepsArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct McpArgs {
+    /// Project root for MCP tools. Defaults to the current directory.
+    #[arg(default_value = ".")]
+    pub root: PathBuf,
+}
+
+#[derive(Debug, Args)]
 pub struct IndexArgs {
     /// Path to index. Defaults to the current directory.
     #[arg(default_value = ".")]
@@ -158,7 +168,7 @@ pub struct BenchArgs {
     /// Replay a built-in benchmark suite, for example --suite discovery.
     #[arg(long)]
     pub suite: Option<String>,
-    /// Comma-separated modes: raw,proxy,indexed.
+    /// Comma-separated modes: raw,proxy,indexed,codedb.
     #[arg(long, default_value = "raw,proxy,indexed")]
     pub compare: String,
     /// Repository or fixture root to run the benchmark in.
@@ -364,7 +374,7 @@ pub struct TraceReplayArgs {
     /// Repository or fixture root to replay commands in.
     #[arg(long, default_value = ".")]
     pub repo: PathBuf,
-    /// Comma-separated modes: raw,proxy,indexed.
+    /// Comma-separated modes: raw,proxy,indexed,codedb.
     #[arg(long, default_value = "raw,proxy,indexed")]
     pub compare: String,
     /// Maximum unique safe commands to replay.
@@ -412,6 +422,7 @@ pub fn execute(cli: Cli) -> Result<ExecResult> {
         Commands::Trace(args) => trace::execute_trace(args),
         Commands::Gain(args) => execute_gain(args),
         Commands::Deps(args) => deps::execute_deps(&args.path, (&args.output).into()),
+        Commands::Mcp(args) => mcp::execute_mcp(args),
         Commands::Shims(args) => shims::execute_shims(args),
         Commands::Hooks(args) => hooks::execute_hooks(args),
         Commands::ShimExec(args) => shims::execute_shim_exec(args),

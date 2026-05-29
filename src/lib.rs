@@ -1,5 +1,6 @@
 pub mod bench;
 pub mod cli;
+pub mod code_intel;
 pub mod command;
 pub mod deps;
 pub mod doctor;
@@ -10,6 +11,7 @@ pub mod git_compact;
 pub mod hooks;
 pub mod index;
 pub mod line_read;
+pub mod mcp;
 pub mod output;
 pub mod parser;
 pub mod repo_map;

@@ -30,6 +30,8 @@ const SHIM_COMMANDS: &[&str] = &[
     "npm",
     "pnpm",
     "yarn",
+    "bun",
+    "bunx",
     "npx",
     "vitest",
     "jest",

@@ -68,7 +68,7 @@ fn summarize_test_output(runner: TestCommand, stdout: &str, limit: usize) -> Tes
         TestCommand::Playwright => crate::parser::parse_playwright_text(stdout, limit),
         TestCommand::Ruff => crate::parser::parse_ruff_text(stdout, limit),
         TestCommand::Mypy => crate::parser::parse_mypy_text(stdout, limit),
-        TestCommand::Npm | TestCommand::Pnpm | TestCommand::Yarn => {
+        TestCommand::Npm | TestCommand::Pnpm | TestCommand::Yarn | TestCommand::Bun => {
             crate::parser::parse_vitest_text(stdout, limit)
         }
     };
@@ -93,6 +93,7 @@ fn runner_name(runner: TestCommand) -> &'static str {
         TestCommand::Npm => "npm",
         TestCommand::Pnpm => "pnpm",
         TestCommand::Yarn => "yarn",
+        TestCommand::Bun => "bun",
         TestCommand::Vitest => "vitest",
         TestCommand::Jest => "jest",
         TestCommand::Playwright => "playwright",
