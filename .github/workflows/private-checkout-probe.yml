@@ -1,0 +1,27 @@
+name: Private checkout probe
+
+on:
+  push:
+    branches:
+      - agent/rust-toolchain-artifact-20260823
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test private repository read
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git ls-remote "https://x-access-token:${GH_TOKEN}@github.com/winterrx/rust-olap-lab.git" \
+            refs/heads/agent/general-native-engine-20260823 \
+            | sed 's/[[:space:]].*/ private-branch/'
