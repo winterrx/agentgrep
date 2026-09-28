@@ -280,8 +280,10 @@ fn fast_passthrough_script(command: &str, real_program: &str) -> String {
     if command != "git" {
         return String::new();
     }
+    // Commits can run long hooks or prompt for input. Preserve Git's live
+    // streams and exit status instead of capturing the whole command output.
     format!(
-        "_ag_git_subcmd=\n_ag_git_skip_next=0\nfor _ag_git_arg do\n  if [ \"$_ag_git_skip_next\" = 1 ]; then\n    _ag_git_skip_next=0\n    continue\n  fi\n  case \"$_ag_git_arg\" in\n    -C|--git-dir|--work-tree|-c)\n      _ag_git_skip_next=1\n      ;;\n    --git-dir=*|--work-tree=*|-c=*)\n      ;;\n    -*)\n      ;;\n    *)\n      _ag_git_subcmd=$_ag_git_arg\n      break\n      ;;\n  esac\ndone\ncase \"$_ag_git_subcmd\" in\n  rev-parse|rev-list|remote|config)\n    exec {} \"$@\"\n    ;;\nesac\n",
+        "_ag_git_subcmd=\n_ag_git_skip_next=0\nfor _ag_git_arg do\n  if [ \"$_ag_git_skip_next\" = 1 ]; then\n    _ag_git_skip_next=0\n    continue\n  fi\n  case \"$_ag_git_arg\" in\n    -C|--git-dir|--work-tree|-c)\n      _ag_git_skip_next=1\n      ;;\n    --git-dir=*|--work-tree=*|-c=*)\n      ;;\n    -*)\n      ;;\n    *)\n      _ag_git_subcmd=$_ag_git_arg\n      break\n      ;;\n  esac\ndone\ncase \"$_ag_git_subcmd\" in\n  rev-parse|rev-list|remote|config|commit)\n    exec {} \"$@\"\n    ;;\nesac\n",
         shell_single_quote(real_program)
     )
 }
@@ -478,5 +480,82 @@ mod tests {
 
         assert!(script.contains("rev-parse|rev-list|remote|config"));
         assert!(script.contains("exec '/opt/bin/git' \"$@\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_commit_streams_hook_output_and_preserves_hook_failure() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        let git = resolve_real_program("git")
+            .unwrap()
+            .expect("Git is required");
+        assert!(
+            Command::new(&git)
+                .arg("init")
+                .arg(&repo)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        let hook = repo.join(".git/hooks/pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\nprintf 'hook-started\\n'\nsleep 1\nexit 7\n",
+        )
+        .unwrap();
+        make_executable(&hook).unwrap();
+        let shim = temp.path().join("git");
+        fs::write(
+            &shim,
+            shim_script("git", &temp.path().join("absent-optimizer"), Some(&git)).unwrap(),
+        )
+        .unwrap();
+        let mut child = Command::new("/bin/sh")
+            .arg(&shim)
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c",
+                "user.name=Shim Test",
+                "-c",
+                "user.email=shim@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Hook must reject",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Git forwards pre-commit output to stderr even when the hook writes stdout.
+        let stderr = child.stderr.take().unwrap();
+        let mut line = String::new();
+        BufReader::new(stderr).read_line(&mut line).unwrap();
+        assert_eq!(line, "hook-started\n");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "hook output must arrive before Git exits"
+        );
+        assert!(
+            !child.wait().unwrap().success(),
+            "a failed hook must still reject the commit"
+        );
+        assert!(
+            !Command::new(&git)
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "--verify", "HEAD"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
     }
 }
