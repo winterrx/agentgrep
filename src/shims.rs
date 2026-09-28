@@ -241,7 +241,6 @@ fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> 
     Ok(format!(
         r#"#!/bin/sh
 {marker}
-{fast_passthrough}
 shim_dir=$(dirname "$0")
 case "$shim_dir" in
   /*) ;;
@@ -252,7 +251,7 @@ new_path=
 old_ifs=$IFS
 IFS=:
 for entry in $PATH; do
-  if [ "$entry" = "$shim_dir" ]; then
+  if [ "$entry" = "$shim_dir" ] || [ "$entry" -ef "$shim_dir" ]; then
     continue
   fi
   if [ -z "$new_path" ]; then
@@ -262,7 +261,9 @@ for entry in $PATH; do
   fi
 done
 IFS=$old_ifs
+# Hooks and other subprocesses must not reenter the shim directory.
 export PATH=$new_path
+{fast_passthrough}
 export AGENTGREP_SHIM_DIR=$shim_dir
 export AGENTGREP_SHIM_ACTIVE=1
 {stdin_passthrough}
@@ -502,12 +503,24 @@ mod tests {
                 .status
                 .success()
         );
-        let hook = repo.join(".git/hooks/pre-commit");
+        let real_tools = temp.path().join("real-tools");
+        fs::create_dir(&real_tools).unwrap();
+        let nested_tool = real_tools.join("cargo");
         fs::write(
-            &hook,
-            "#!/bin/sh\nprintf 'hook-started\\n'\nsleep 1\nexit 7\n",
+            &nested_tool,
+            "#!/bin/sh\nprintf 'hook-started\\n'\nsleep 1\n",
         )
         .unwrap();
+        make_executable(&nested_tool).unwrap();
+        let wrapped_tool = temp.path().join("cargo");
+        fs::write(
+            &wrapped_tool,
+            "#!/bin/sh\nprintf 'wrong-shim-selected\\n'\nexit 93\n",
+        )
+        .unwrap();
+        make_executable(&wrapped_tool).unwrap();
+        let hook = repo.join(".git/hooks/pre-commit");
+        fs::write(&hook, "#!/bin/sh\ncargo hook-probe\nexit 7\n").unwrap();
         make_executable(&hook).unwrap();
         let shim = temp.path().join("git");
         fs::write(
@@ -515,7 +528,13 @@ mod tests {
             shim_script("git", &temp.path().join("absent-optimizer"), Some(&git)).unwrap(),
         )
         .unwrap();
+        let inherited_path = env::var_os("PATH").unwrap_or_default();
+        let shim_alias = temp.path().join("shim-alias");
+        std::os::unix::fs::symlink(temp.path(), &shim_alias).unwrap();
+        let mut hook_path = vec![temp.path().to_path_buf(), shim_alias, real_tools];
+        hook_path.extend(env::split_paths(&inherited_path));
         let mut child = Command::new("/bin/sh")
+            .env("PATH", env::join_paths(hook_path).unwrap())
             .arg(&shim)
             .arg("-C")
             .arg(&repo)
