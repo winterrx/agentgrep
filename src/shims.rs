@@ -210,7 +210,7 @@ fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> 
     let agentgrep = agentgrep
         .to_str()
         .ok_or_else(|| anyhow!("agentgrep path is not valid UTF-8: {}", agentgrep.display()))?;
-    let fast_passthrough = match real_program {
+    let (fast_passthrough, inherited_passthrough) = match real_program {
         Some(real_program) => {
             let real_program = real_program.to_str().ok_or_else(|| {
                 anyhow!(
@@ -218,9 +218,15 @@ fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> 
                     real_program.display()
                 )
             })?;
-            fast_passthrough_script(command, real_program)
+            (
+                fast_passthrough_script(command, real_program),
+                format!(
+                    "if [ \"${{AGENTGREP_SHIM_PASSTHROUGH:-}}\" = 1 ]; then\n  exec {} \"$@\"\nfi\n",
+                    shell_single_quote(real_program)
+                ),
+            )
         }
-        None => String::new(),
+        None => (String::new(), String::new()),
     };
     let stdin_passthrough = match real_program {
         Some(real_program) => {
@@ -241,6 +247,7 @@ fn shim_script(command: &str, agentgrep: &Path, real_program: Option<&Path>) -> 
     Ok(format!(
         r#"#!/bin/sh
 {marker}
+{inherited_passthrough}
 {fast_passthrough}
 shim_dir=$(dirname "$0")
 case "$shim_dir" in
@@ -252,7 +259,7 @@ new_path=
 old_ifs=$IFS
 IFS=:
 for entry in $PATH; do
-  if [ "$entry" = "$shim_dir" ]; then
+  if [ "$entry" = "$shim_dir" ] || [ "$entry" -ef "$shim_dir" ]; then
     continue
   fi
   if [ -z "$new_path" ]; then
@@ -270,6 +277,7 @@ exec {agentgrep} shim-exec {command} -- "$@"
 "#,
         marker = SHIM_MARKER,
         fast_passthrough = fast_passthrough,
+        inherited_passthrough = inherited_passthrough,
         stdin_passthrough = stdin_passthrough,
         agentgrep = shell_single_quote(agentgrep),
         command = shell_single_quote(command),
@@ -283,8 +291,8 @@ fn fast_passthrough_script(command: &str, real_program: &str) -> String {
     // Commits can run long hooks or prompt for input. Preserve Git's live
     // streams and exit status instead of capturing the whole command output.
     format!(
-        "_ag_git_subcmd=\n_ag_git_skip_next=0\nfor _ag_git_arg do\n  if [ \"$_ag_git_skip_next\" = 1 ]; then\n    _ag_git_skip_next=0\n    continue\n  fi\n  case \"$_ag_git_arg\" in\n    -C|--git-dir|--work-tree|-c)\n      _ag_git_skip_next=1\n      ;;\n    --git-dir=*|--work-tree=*|-c=*)\n      ;;\n    -*)\n      ;;\n    *)\n      _ag_git_subcmd=$_ag_git_arg\n      break\n      ;;\n  esac\ndone\ncase \"$_ag_git_subcmd\" in\n  rev-parse|rev-list|remote|config|commit)\n    exec {} \"$@\"\n    ;;\nesac\n",
-        shell_single_quote(real_program)
+        "_ag_git_subcmd=\n_ag_git_skip_next=0\nfor _ag_git_arg do\n  if [ \"$_ag_git_skip_next\" = 1 ]; then\n    _ag_git_skip_next=0\n    continue\n  fi\n  case \"$_ag_git_arg\" in\n    -C|--git-dir|--work-tree|-c)\n      _ag_git_skip_next=1\n      ;;\n    --git-dir=*|--work-tree=*|-c=*)\n      ;;\n    -*)\n      ;;\n    *)\n      _ag_git_subcmd=$_ag_git_arg\n      break\n      ;;\n  esac\ndone\ncase \"$_ag_git_subcmd\" in\n  rev-parse|rev-list|remote|config)\n    exec {real} \"$@\"\n    ;;\n  commit)\n    export AGENTGREP_SHIM_PASSTHROUGH=1\n    exec {real} \"$@\"\n    ;;\nesac\n",
+        real = shell_single_quote(real_program)
     )
 }
 
@@ -502,10 +510,34 @@ mod tests {
                 .status
                 .success()
         );
+        let real_tools = temp.path().join("real-tools");
+        fs::create_dir(&real_tools).unwrap();
+        let nested_tool = real_tools.join("cargo");
+        fs::write(
+            &nested_tool,
+            "#!/bin/sh\nprintf 'hook-started\\n'\nsleep 1\n",
+        )
+        .unwrap();
+        make_executable(&nested_tool).unwrap();
+        let wrapped_tool = temp.path().join("cargo");
+        fs::write(
+            &wrapped_tool,
+            shim_script(
+                "cargo",
+                &temp.path().join("absent-optimizer"),
+                Some(&nested_tool),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        make_executable(&wrapped_tool).unwrap();
+        let local_helper = temp.path().join("local-hook-helper");
+        fs::write(&local_helper, "#!/bin/sh\nexit 0\n").unwrap();
+        make_executable(&local_helper).unwrap();
         let hook = repo.join(".git/hooks/pre-commit");
         fs::write(
             &hook,
-            "#!/bin/sh\nprintf 'hook-started\\n'\nsleep 1\nexit 7\n",
+            "#!/bin/sh\nlocal-hook-helper || exit 91\ncargo hook-probe\nexit 7\n",
         )
         .unwrap();
         make_executable(&hook).unwrap();
@@ -515,7 +547,13 @@ mod tests {
             shim_script("git", &temp.path().join("absent-optimizer"), Some(&git)).unwrap(),
         )
         .unwrap();
+        let inherited_path = env::var_os("PATH").unwrap_or_default();
+        let shim_alias = temp.path().join("shim-alias");
+        std::os::unix::fs::symlink(temp.path(), &shim_alias).unwrap();
+        let mut hook_path = vec![temp.path().to_path_buf(), shim_alias, real_tools];
+        hook_path.extend(env::split_paths(&inherited_path));
         let mut child = Command::new("/bin/sh")
+            .env("PATH", env::join_paths(hook_path).unwrap())
             .arg(&shim)
             .arg("-C")
             .arg(&repo)
